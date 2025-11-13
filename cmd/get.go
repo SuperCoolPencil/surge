@@ -20,6 +20,8 @@ var getCmd = &cobra.Command{
 		outPath, _ := cmd.Flags().GetString("path")
 		concurrent, _ := cmd.Flags().GetInt("concurrent")
 		verbose, _ := cmd.Flags().GetBool("verbose")
+		md5sum, _ := cmd.Flags().GetString("md5")
+		sha256sum, _ := cmd.Flags().GetString("sha256")
 
 		if outPath == "" {
 			outPath = "." // Default download directory to current directory
@@ -29,7 +31,7 @@ var getCmd = &cobra.Command{
 		ctx := context.Background()
 
 		fmt.Printf("Downloading %s to %s...\n", url, outPath)
-		err := d.Download(ctx, url, outPath, concurrent, verbose)
+		err := d.Download(ctx, url, outPath, concurrent, verbose, md5sum, sha256sum)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error downloading file: %v\n", err)
 			os.Exit(1)
@@ -42,4 +44,6 @@ func init() {
 	getCmd.Flags().StringP("path", "p", "", "the path to the download folder")
 	getCmd.Flags().IntP("concurrent", "c", 1, "number of concurrent downloads")
 	getCmd.Flags().BoolP("verbose", "v", false, "enable verbose output")
+	getCmd.Flags().String("md5", "", "MD5 checksum for verification")
+	getCmd.Flags().String("sha256", "", "SHA256 checksum for verification")
 }
