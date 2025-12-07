@@ -18,7 +18,7 @@ var getCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		url := args[0]
 		outPath, _ := cmd.Flags().GetString("path")
-		concurrent, _ := cmd.Flags().GetBool("concurrent")
+		concurrent, _ := cmd.Flags().GetInt("concurrent")
 		verbose, _ := cmd.Flags().GetBool("verbose")
 		md5sum, _ := cmd.Flags().GetString("md5")
 		sha256sum, _ := cmd.Flags().GetString("sha256")
@@ -42,7 +42,7 @@ var getCmd = &cobra.Command{
 
 func init() {
 	getCmd.Flags().StringP("path", "p", "", "the path to the download folder")
-	getCmd.Flags().BoolP("concurrent", "c", false, "enable concurrent downloads")
+	getCmd.Flags().IntP("concurrent", "c", 1, "number of concurrent connections (1 = single thread)")
 	getCmd.Flags().BoolP("verbose", "v", false, "enable verbose output")
 	getCmd.Flags().String("md5", "", "MD5 checksum for verification")
 	getCmd.Flags().String("sha256", "", "SHA256 checksum for verification")
