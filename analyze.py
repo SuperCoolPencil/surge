@@ -348,6 +348,98 @@ def generate_speed_graph(workers: dict, output_file: str = "speed_graph.png"):
     print(f"\n📊 Speed graph saved to: {output_file}")
 
 
+def generate_per_worker_speed_graph(workers: dict, output_file: str = "worker_speeds.png"):
+    """
+    Generate a subplot grid showing each worker's speed over time individually.
+    """
+    if not HAS_MATPLOTLIB:
+        print("\n⚠️  Skipping per-worker graph (matplotlib not available).")
+        return
+    
+    # Filter workers with tasks
+    active_workers = sorted([w for w in workers.values() if w.tasks], 
+                           key=lambda w: w.worker_id)
+    
+    if not active_workers:
+        print("\n⚠️  No worker data available for per-worker graph.")
+        return
+    
+    num_workers = len(active_workers)
+    # Calculate grid layout (prefer 2 columns)
+    cols = min(2, num_workers)
+    rows = (num_workers + cols - 1) // cols
+    
+    fig, axes = plt.subplots(rows, cols, figsize=(7 * cols, 4 * rows), 
+                              dpi=100, squeeze=False)
+    fig.patch.set_facecolor('#1a1a2e')
+    
+    # Flatten axes array for easy iteration
+    axes_flat = axes.flatten()
+    
+    # Calculate global speed range for consistent y-axis
+    all_speeds = [t.speed_mbps for w in active_workers for t in w.tasks]
+    y_max = max(all_speeds) * 1.1 if all_speeds else 100
+    
+    # Color for bars/line
+    bar_color = '#4ecdc4'
+    avg_color = '#ff6b6b'
+    
+    for idx, worker in enumerate(active_workers):
+        ax = axes_flat[idx]
+        ax.set_facecolor('#16213e')
+        
+        # Sort tasks by completion time
+        sorted_tasks = sorted(worker.tasks, key=lambda t: t.timestamp)
+        times = [t.timestamp for t in sorted_tasks]
+        speeds = [t.speed_mbps for t in sorted_tasks]
+        
+        # Plot speed as line with markers
+        ax.plot(times, speeds, color=bar_color, linewidth=1.5, 
+                marker='o', markersize=4, alpha=0.8, label='Speed')
+        
+        # Add average line
+        avg_speed = sum(speeds) / len(speeds) if speeds else 0
+        ax.axhline(y=avg_speed, color=avg_color, linestyle='--', 
+                   linewidth=1.5, alpha=0.8, label=f'Avg: {avg_speed:.1f} MB/s')
+        
+        # Fill under the curve
+        ax.fill_between(times, speeds, alpha=0.2, color=bar_color)
+        
+        # Styling
+        ax.set_title(f'Worker {worker.worker_id}', fontsize=11, 
+                     color='white', fontweight='bold')
+        ax.set_ylabel('Speed (MB/s)', fontsize=9, color='white')
+        ax.set_ylim(0, y_max)
+        
+        # X-axis formatting
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+        ax.tick_params(axis='x', rotation=45, labelsize=8, colors='white')
+        ax.tick_params(axis='y', labelsize=8, colors='white')
+        
+        # Grid
+        ax.grid(True, alpha=0.3, color='gray', linestyle='--')
+        ax.legend(loc='upper right', fontsize=8, facecolor='#0f3460', 
+                  edgecolor='white', labelcolor='white')
+        
+        # Spine styling
+        for spine in ax.spines.values():
+            spine.set_color('white')
+            spine.set_alpha(0.3)
+    
+    # Hide unused subplots
+    for idx in range(num_workers, len(axes_flat)):
+        axes_flat[idx].set_visible(False)
+    
+    plt.suptitle('Per-Worker Download Speed', fontsize=14, color='white', 
+                 fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.savefig(output_file, facecolor=fig.get_facecolor(), edgecolor='none',
+                bbox_inches='tight', dpi=150)
+    plt.close()
+    
+    print(f"📊 Per-worker speed graph saved to: {output_file}")
+
+
 # ==============================================================================
 # ANALYSIS & REPORTING
 # ==============================================================================
@@ -592,10 +684,11 @@ def analyze_and_report(data: dict):
         print("\n  ✅ No major optimization issues detected. Download looks healthy!")
     
     # ==========================================================================
-    # GENERATE SPEED GRAPH
+    # GENERATE SPEED GRAPHS
     # ==========================================================================
     print_header("📊 SPEED GRAPH GENERATION")
     generate_speed_graph(workers)
+    generate_per_worker_speed_graph(workers)
     
     print("\n" + "=" * 60)
 
