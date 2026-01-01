@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"surge/internal/utils"
@@ -225,12 +227,18 @@ func createTasks(fileSize, chunkSize int64) []Task {
 }
 
 // newConcurrentClient creates an http.Client tuned for concurrent downloads
-func newConcurrentClient() *http.Client {
+func newConcurrentClient(numConns int) *http.Client {
+	// Ensure we have enough connections per host
+	maxConns := PerHostMax
+	if numConns > maxConns {
+		maxConns = numConns
+	}
+
 	transport := &http.Transport{
 		// Connection pooling
 		MaxIdleConns:        DefaultMaxIdleConns,
-		MaxIdleConnsPerHost: PerHostMax + 2, // Slightly more than max to handle bursts
-		MaxConnsPerHost:     PerHostMax,
+		MaxIdleConnsPerHost: maxConns + 2, // Slightly more than max to handle bursts
+		MaxConnsPerHost:     maxConns,
 
 		// Timeouts to prevent hung connections
 		IdleConnTimeout:       DefaultIdleConnTimeout,
@@ -239,8 +247,9 @@ func newConcurrentClient() *http.Client {
 		ExpectContinueTimeout: DefaultExpectContinueTimeout,
 
 		// Performance tuning
-		DisableCompression: true, // Files are usually already compressed
-		ForceAttemptHTTP2:  true, // HTTP/2 multiplexing if available
+		DisableCompression: true,  // Files are usually already compressed
+		ForceAttemptHTTP2:  false, // FORCE HTTP/1.1 for multiple TCP connections
+		TLSNextProto:       make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 
 		// Dial settings for TCP reliability
 		DialContext: (&net.Dialer{
@@ -259,12 +268,12 @@ func newConcurrentClient() *http.Client {
 func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl, destPath string, fileSize int64, verbose bool) error {
 	utils.Debug("ConcurrentDownloader.Download: %s -> %s (size: %d)", rawurl, destPath, fileSize)
 
-	// Create tuned HTTP client for concurrent downloads
-	client := newConcurrentClient()
-
 	// Determine connections and chunk size
 	numConns := getInitialConnections(fileSize)
 	chunkSize := calculateChunkSize(fileSize, numConns)
+
+	// Create tuned HTTP client for concurrent downloads
+	client := newConcurrentClient(numConns)
 
 	if verbose {
 		fmt.Printf("File size: %s, connections: %d, chunk size: %s\n",
@@ -281,8 +290,14 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl, destPath st
 	defer outFile.Close()
 
 	// Preallocate file to avoid fragmentation
-	if err := outFile.Truncate(fileSize); err != nil {
-		return fmt.Errorf("failed to preallocate file: %w", err)
+	// Use Fallocate to reserve physical blocks (Linux specific)
+	fileDesc := int(outFile.Fd())
+	if err := syscall.Fallocate(fileDesc, 0, 0, fileSize); err != nil {
+		// Fallback to Truncate if Fallocate fails (not supported)
+		utils.Debug("Fallocate failed: %v. Falling back to Truncate.", err)
+		if err := outFile.Truncate(fileSize); err != nil {
+			return fmt.Errorf("failed to preallocate file: %w", err)
+		}
 	}
 
 	// Create task queue
@@ -508,20 +523,48 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 			return nil
 		}
 
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			_, writeErr := file.WriteAt(buf[:n], offset)
+		// Calculate how much to read to fill buffer or hit stopAt/EOF
+		// We want to fill buf as much as possible to minimize WriteAt calls
+
+		// Limit by remaining length to stopAt
+		remaining := stopAt - offset
+		if remaining <= 0 {
+			return nil
+		}
+
+		readSize := int64(len(buf))
+		if readSize > remaining {
+			readSize = remaining
+		}
+
+		readSoFar := 0
+		var readErr error
+
+		for readSoFar < int(readSize) {
+			n, err := resp.Body.Read(buf[readSoFar:readSize])
+			if n > 0 {
+				readSoFar += n
+			}
+			if err != nil {
+				readErr = err
+				break
+			}
+		}
+
+		if readSoFar > 0 {
+			_, writeErr := file.WriteAt(buf[:readSoFar], offset)
 			if writeErr != nil {
 				return fmt.Errorf("write error: %w", writeErr)
 			}
-			offset += int64(n)
+			offset += int64(readSoFar)
 			atomic.StoreInt64(&activeTask.CurrentOffset, offset)
 
 			// Update progress via shared state only (removed duplicate tracking)
 			if d.State != nil {
-				d.State.Downloaded.Add(int64(n))
+				d.State.Downloaded.Add(int64(readSoFar))
 			}
 		}
+
 		if readErr == io.EOF {
 			break
 		}
@@ -534,58 +577,78 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 }
 
 // StealWork tries to split an active task from a busy worker
+// It greedily targets the worker with the MOST remaining work.
 func (d *ConcurrentDownloader) StealWork(queue *TaskQueue) bool {
 	d.activeMu.Lock()
 	defer d.activeMu.Unlock()
 
+	var bestID int = -1
+	var maxRemaining int64 = 0
+	var bestActive *ActiveTask
+
+	// Find the worker with the MOST remaining work
 	for id, active := range d.activeTasks {
 		current := atomic.LoadInt64(&active.CurrentOffset)
 		stopAt := atomic.LoadInt64(&active.StopAt)
 		remaining := stopAt - current
 
-		if remaining > MinChunk {
-
-			// Found a candidate
-			// Split in half
-			splitSize := remaining / 2
-			// Align to 4KB
-			splitSize = (splitSize / AlignSize) * AlignSize
-
-			if splitSize < MinChunk {
-				continue
-			}
-
-			newStopAt := current + splitSize
-
-			// Update the active task stop point
-			// TODO: There maybe a race condition here, I dont know whay to do. This whole function is dirty :(
-			atomic.StoreInt64(&active.StopAt, newStopAt)
-
-			finalCurrent := atomic.LoadInt64(&active.CurrentOffset)
-
-			// The actual start of the stolen chunk must be after where the worker effectively stops.
-			stolenStart := newStopAt
-			if finalCurrent > newStopAt {
-				stolenStart = finalCurrent
-			}
-
-			// Ensure we still have a valid chunk to steal
-			if stolenStart >= stopAt {
-				// Race condition: worker finished the whole thing before we could steal
-				continue
-			}
-
-			stolenTask := Task{
-				Offset: stolenStart,
-				Length: stopAt - stolenStart,
-			}
-
-			queue.Push(stolenTask)
-			utils.Debug("Balancer: stole %s from worker %d (new range: %d-%d)",
-				utils.ConvertBytesToHumanReadable(stolenTask.Length), id, stolenTask.Offset, stolenTask.Offset+stolenTask.Length)
-
-			return true
+		if remaining > MinChunk && remaining > maxRemaining {
+			maxRemaining = remaining
+			bestID = id
+			bestActive = active
 		}
 	}
-	return false
+
+	if bestID == -1 {
+		return false
+	}
+
+	// Found the best candidate, now try to steal
+	remaining := maxRemaining
+	active := bestActive
+
+	// Split in half
+	splitSize := remaining / 2
+	// Align to 4KB
+	splitSize = (splitSize / AlignSize) * AlignSize
+
+	if splitSize < MinChunk {
+		return false
+	}
+
+	current := atomic.LoadInt64(&active.CurrentOffset)
+	newStopAt := current + splitSize
+
+	// Update the active task stop point
+	atomic.StoreInt64(&active.StopAt, newStopAt)
+
+	finalCurrent := atomic.LoadInt64(&active.CurrentOffset)
+
+	// The actual start of the stolen chunk must be after where the worker effectively stops.
+	stolenStart := newStopAt
+	if finalCurrent > newStopAt {
+		stolenStart = finalCurrent
+	}
+
+	// Double check: ensure we didn't race and lose the chunk
+	currentStopAt := atomic.LoadInt64(&active.StopAt)
+	if stolenStart >= currentStopAt && currentStopAt != newStopAt {
+	}
+
+	originalEnd := current + remaining
+
+	if stolenStart >= originalEnd {
+		return false
+	}
+
+	stolenTask := Task{
+		Offset: stolenStart,
+		Length: originalEnd - stolenStart,
+	}
+
+	queue.Push(stolenTask)
+	utils.Debug("Balancer: stole %s from worker %d (new range: %d-%d)",
+		utils.ConvertBytesToHumanReadable(stolenTask.Length), bestID, stolenTask.Offset, stolenTask.Offset+stolenTask.Length)
+
+	return true
 }

@@ -29,7 +29,7 @@ const (
 
 // Connection limits
 const (
-	PerHostMax = 8 // Max concurrent connections per host
+	PerHostMax = 16 // Max concurrent connections per host
 )
 
 // HTTP Client Tuning
