@@ -50,7 +50,7 @@ var getCmd = &cobra.Command{
 		sha256sum, _ := cmd.Flags().GetString("sha256")
 
 		if outPath == "" {
-			outPath = "downloads/"
+			outPath = "."
 		}
 
 		initTUI()
