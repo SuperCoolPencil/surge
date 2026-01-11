@@ -311,10 +311,18 @@ func (m *RootModel) setPerformanceSetting(key, value, typ string) error {
 			m.Settings.Performance.SlowWorkerThreshold = v
 		}
 	case "slow_worker_grace_period":
+		// Check if it's just a number, if so add "s"
+		if _, err := strconv.ParseFloat(value, 64); err == nil {
+			value += "s"
+		}
 		if v, err := time.ParseDuration(value); err == nil {
 			m.Settings.Performance.SlowWorkerGracePeriod = v
 		}
 	case "stall_timeout":
+		// Check if it's just a number, if so add "s"
+		if _, err := strconv.ParseFloat(value, 64); err == nil {
+			value += "s"
+		}
 		if v, err := time.ParseDuration(value); err == nil {
 			m.Settings.Performance.StallTimeout = v
 		}
