@@ -75,6 +75,10 @@ func (m RootModel) View() string {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 	}
 
+	if m.state == SettingsState {
+		return m.viewSettings()
+	}
+
 	if m.state == DuplicateWarningState {
 		warningContent := lipgloss.JoinVertical(lipgloss.Center,
 			lipgloss.NewStyle().Foreground(ColorNeonPink).Bold(true).Render("⚠ DUPLICATE DETECTED"),
@@ -356,7 +360,7 @@ func (m RootModel) View() string {
 	body := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
 
 	// Footer - just keybindings
-	footer := lipgloss.NewStyle().Foreground(ColorLightGray).Padding(0, 1).Render(" [Q/W/E] Tabs  [A] Add  [P] Pause  [X] Delete  [L] Log  [/] Filter  [Ctrl+Q] Quit")
+	footer := lipgloss.NewStyle().Foreground(ColorLightGray).Padding(0, 1).Render(" [Q/W/E] Tabs  [A] Add  [P] Pause  [X] Delete  [S] Settings  [L] Log  [Ctrl+Q] Quit")
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		body,

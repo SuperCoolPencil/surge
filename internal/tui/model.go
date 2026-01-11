@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"surge/internal/config"
 	"surge/internal/downloader"
 )
 
@@ -27,6 +28,7 @@ const (
 	HistoryState                         //HistoryState is 4
 	DuplicateWarningState                //DuplicateWarningState is 5
 	SearchState                          //SearchState is 6
+	SettingsState                        //SettingsState is 7
 )
 
 const (
@@ -108,6 +110,13 @@ type RootModel struct {
 	logViewport viewport.Model // Scrollable log viewport
 	logEntries  []string       // Log entries for download events
 	logFocused  bool           // Whether the log viewport is focused
+
+	// Settings
+	Settings            *config.Settings // Application settings
+	SettingsActiveTab   int              // Active category tab (0-3)
+	SettingsSelectedRow int              // Selected setting within current tab
+	SettingsIsEditing   bool             // Whether currently editing a value
+	SettingsInput       textinput.Model  // Input for editing string/int values
 }
 
 // NewDownloadModel creates a new download model with progress state and reporter
@@ -203,6 +212,14 @@ func InitialRootModel() RootModel {
 	helpModel.Styles.ShortKey = lipgloss.NewStyle().Foreground(ColorLightGray)
 	helpModel.Styles.ShortDesc = lipgloss.NewStyle().Foreground(ColorGray)
 
+	// Load settings from disk (or defaults)
+	settings, _ := config.LoadSettings()
+
+	// Initialize settings input for editing
+	settingsInput := textinput.New()
+	settingsInput.Width = 40
+	settingsInput.Prompt = ""
+
 	return RootModel{
 		downloads:      downloads,
 		NextDownloadID: len(downloads) + 1, // Start after loaded downloads
@@ -217,6 +234,8 @@ func InitialRootModel() RootModel {
 		SpeedHistory:   make([]float64, GraphHistoryPoints), // 60 points of history (30s at 0.5s interval)
 		logViewport:    viewport.New(40, 5),                 // Default size, will be resized
 		logEntries:     make([]string, 0),
+		Settings:       settings,
+		SettingsInput:  settingsInput,
 	}
 }
 

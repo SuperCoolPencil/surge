@@ -60,6 +60,71 @@ type DownloadConfig struct {
 	SHA256Sum  string
 	ProgressCh chan<- tea.Msg
 	State      *ProgressState
+	Runtime    *RuntimeConfig // Dynamic settings from user config
+}
+
+// RuntimeConfig holds dynamic settings that can override defaults
+type RuntimeConfig struct {
+	MaxConnectionsPerHost int
+	MaxGlobalConnections  int
+	UserAgent             string
+	MinChunkSize          int64
+	MaxChunkSize          int64
+	TargetChunkSize       int64
+	WorkerBufferSize      int
+	MaxTaskRetries        int
+	SlowWorkerThreshold   float64
+	SlowWorkerGracePeriod time.Duration
+	StallTimeout          time.Duration
+	SpeedEmaAlpha         float64
+}
+
+// GetUserAgent returns the configured user agent or the default
+func (r *RuntimeConfig) GetUserAgent() string {
+	if r == nil || r.UserAgent == "" {
+		return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	}
+	return r.UserAgent
+}
+
+// GetMaxConnectionsPerHost returns configured value or default
+func (r *RuntimeConfig) GetMaxConnectionsPerHost() int {
+	if r == nil || r.MaxConnectionsPerHost <= 0 {
+		return PerHostMax
+	}
+	return r.MaxConnectionsPerHost
+}
+
+// GetMinChunkSize returns configured value or default
+func (r *RuntimeConfig) GetMinChunkSize() int64 {
+	if r == nil || r.MinChunkSize <= 0 {
+		return MinChunk
+	}
+	return r.MinChunkSize
+}
+
+// GetMaxChunkSize returns configured value or default
+func (r *RuntimeConfig) GetMaxChunkSize() int64 {
+	if r == nil || r.MaxChunkSize <= 0 {
+		return MaxChunk
+	}
+	return r.MaxChunkSize
+}
+
+// GetTargetChunkSize returns configured value or default
+func (r *RuntimeConfig) GetTargetChunkSize() int64 {
+	if r == nil || r.TargetChunkSize <= 0 {
+		return TargetChunk
+	}
+	return r.TargetChunkSize
+}
+
+// GetWorkerBufferSize returns configured value or default
+func (r *RuntimeConfig) GetWorkerBufferSize() int {
+	if r == nil || r.WorkerBufferSize <= 0 {
+		return WorkerBuffer
+	}
+	return r.WorkerBufferSize
 }
 
 const (

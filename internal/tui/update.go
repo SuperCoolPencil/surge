@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"surge/internal/config"
 	"surge/internal/downloader"
 	"surge/internal/messages"
 	"surge/internal/utils"
@@ -407,6 +408,15 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
+			// Open settings with S
+			if msg.String() == "s" {
+				m.state = SettingsState
+				m.SettingsActiveTab = 0
+				m.SettingsSelectedRow = 0
+				m.SettingsIsEditing = false
+				return m, nil
+			}
+
 			// If log is focused, handle viewport scrolling
 			if m.logFocused {
 				switch msg.String() {
@@ -636,7 +646,119 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, nil
+
+		case SettingsState:
+			// Handle editing mode first
+			if m.SettingsIsEditing {
+				switch msg.String() {
+				case "esc":
+					// Cancel editing
+					m.SettingsIsEditing = false
+					m.SettingsInput.Blur()
+					return m, nil
+				case "enter":
+					// Commit the value
+					categories := config.CategoryOrder()
+					currentCategory := categories[m.SettingsActiveTab]
+					key := m.getCurrentSettingKey()
+					m.setSettingValue(currentCategory, key, m.SettingsInput.Value())
+					m.SettingsIsEditing = false
+					m.SettingsInput.Blur()
+					return m, nil
+				default:
+					// Pass to text input
+					var cmd tea.Cmd
+					m.SettingsInput, cmd = m.SettingsInput.Update(msg)
+					return m, cmd
+				}
+			}
+
+			// Not editing - handle navigation
+			switch msg.String() {
+			case "esc":
+				m.SettingsInput.Blur()
+				return m, nil
+			case "enter":
+				// Commit the value
+				categories := config.CategoryOrder()
+				currentCategory := categories[m.SettingsActiveTab]
+				key := m.getCurrentSettingKey()
+				m.setSettingValue(currentCategory, key, m.SettingsInput.Value())
+				m.SettingsIsEditing = false
+				m.SettingsInput.Blur()
+				return m, nil
+			default:
+				// Pass to text input
+				var cmd tea.Cmd
+				m.SettingsInput, cmd = m.SettingsInput.Update(msg)
+				return m, cmd
+			}
 		}
+
+		// Not editing - handle navigation
+		switch msg.String() {
+		case "esc":
+			// Save settings and exit
+			_ = config.SaveSettings(m.Settings)
+			m.state = DashboardState
+			return m, nil
+		case "1":
+			m.SettingsActiveTab = 0
+			m.SettingsSelectedRow = 0
+			return m, nil
+		case "2":
+			m.SettingsActiveTab = 1
+			m.SettingsSelectedRow = 0
+			return m, nil
+		case "3":
+			m.SettingsActiveTab = 2
+			m.SettingsSelectedRow = 0
+			return m, nil
+		case "4":
+			m.SettingsActiveTab = 3
+			m.SettingsSelectedRow = 0
+			return m, nil
+		case "tab":
+			m.SettingsActiveTab = (m.SettingsActiveTab + 1) % 4
+			m.SettingsSelectedRow = 0
+			return m, nil
+		case "shift+tab":
+			m.SettingsActiveTab = (m.SettingsActiveTab + 3) % 4
+			m.SettingsSelectedRow = 0
+			return m, nil
+		case "up", "k":
+			if m.SettingsSelectedRow > 0 {
+				m.SettingsSelectedRow--
+			}
+			return m, nil
+		case "down", "j":
+			maxRow := m.getSettingsCount() - 1
+			if m.SettingsSelectedRow < maxRow {
+				m.SettingsSelectedRow++
+			}
+			return m, nil
+		case "enter":
+			// Toggle bool or enter edit mode for other types
+			typ := m.getCurrentSettingType()
+			if typ == "bool" {
+				categories := config.CategoryOrder()
+				currentCategory := categories[m.SettingsActiveTab]
+				key := m.getCurrentSettingKey()
+				m.setSettingValue(currentCategory, key, "")
+			} else {
+				// Enter edit mode
+				m.SettingsIsEditing = true
+				// Pre-fill with current value
+				categories := config.CategoryOrder()
+				currentCategory := categories[m.SettingsActiveTab]
+				values := m.getSettingsValues(currentCategory)
+				key := m.getCurrentSettingKey()
+				m.SettingsInput.SetValue(formatSettingValue(values[key], typ))
+				m.SettingsInput.Focus()
+			}
+			return m, nil
+		}
+		return m, nil
 	}
 
 	// Propagate messages to progress bars - only update visible ones for performance
