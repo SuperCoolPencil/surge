@@ -56,8 +56,6 @@ type DownloadConfig struct {
 	ID         string
 	Filename   string
 	Verbose    bool
-	MD5Sum     string
-	SHA256Sum  string
 	ProgressCh chan<- tea.Msg
 	State      *ProgressState
 	Runtime    *RuntimeConfig // Dynamic settings from user config

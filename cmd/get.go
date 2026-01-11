@@ -22,7 +22,7 @@ import (
 const progressChannelBuffer = 100
 
 // runHeadless runs a download without TUI, printing progress to stderr
-func runHeadless(ctx context.Context, url, outPath string, verbose bool, md5sum, sha256sum string) error {
+func runHeadless(ctx context.Context, url, outPath string, verbose bool) error {
 	eventCh := make(chan tea.Msg, progressChannelBuffer)
 
 	startTime := time.Now()
@@ -32,7 +32,7 @@ func runHeadless(ctx context.Context, url, outPath string, verbose bool, md5sum,
 	// Start download in background
 	errCh := make(chan error, 1)
 	go func() {
-		err := downloader.Download(ctx, url, outPath, verbose, md5sum, sha256sum, eventCh, uuid.New().String())
+		err := downloader.Download(ctx, url, outPath, verbose, eventCh, uuid.New().String())
 		errCh <- err
 		close(eventCh)
 	}()
@@ -107,8 +107,6 @@ Use --port to send the download to a running Surge instance.`,
 		url := args[0]
 		outPath, _ := cmd.Flags().GetString("output")
 		verbose, _ := cmd.Flags().GetBool("verbose")
-		md5sum, _ := cmd.Flags().GetString("md5")
-		sha256sum, _ := cmd.Flags().GetString("sha256")
 		port, _ := cmd.Flags().GetInt("port")
 
 		if outPath == "" {
@@ -126,7 +124,7 @@ Use --port to send the download to a running Surge instance.`,
 
 		// Default: headless download
 		ctx := context.Background()
-		if err := runHeadless(ctx, url, outPath, verbose, md5sum, sha256sum); err != nil {
+		if err := runHeadless(ctx, url, outPath, verbose); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -136,7 +134,5 @@ Use --port to send the download to a running Surge instance.`,
 func init() {
 	getCmd.Flags().StringP("output", "o", "", "output directory")
 	getCmd.Flags().BoolP("verbose", "v", false, "verbose output")
-	getCmd.Flags().String("md5", "", "MD5 checksum for verification")
-	getCmd.Flags().String("sha256", "", "SHA256 checksum for verification")
 	getCmd.Flags().IntP("port", "p", 0, "send to running surge server on this port")
 }
