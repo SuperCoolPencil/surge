@@ -598,7 +598,12 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string
 
 			taskStart := time.Now()
 			lastErr = d.downloadTask(taskCtx, rawurl, file, activeTask, buf, verbose, client)
-			taskCancel()
+
+			// CRITICAL: Capture external cancellation state BEFORE calling taskCancel()
+			// If we call taskCancel() first, taskCtx.Err() will always be non-nil
+			wasExternallyCancelled := taskCtx.Err() != nil
+
+			taskCancel() // Clean up context resources
 			utils.Debug("Worker %d: Task offset=%d length=%d took %v", id, task.Offset, task.Length, time.Since(taskStart))
 
 			// Check for PARENT context cancellation (pause/shutdown)
@@ -611,9 +616,9 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string
 				return ctx.Err()
 			}
 
-			// Check if TASK context was cancelled (health monitor killed this task)
+			// Check if TASK context was cancelled by Health Monitor (not by us calling taskCancel)
 			// but parent context is still fine
-			if taskCtx.Err() != nil && lastErr != nil {
+			if wasExternallyCancelled && lastErr != nil {
 				// Health monitor cancelled this task - re-queue REMAINING work only
 				current := atomic.LoadInt64(&activeTask.CurrentOffset)
 
@@ -695,6 +700,11 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 		return err
 	}
 	defer resp.Body.Close()
+
+	// Handle rate limiting explicitly
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return fmt.Errorf("rate limited (429)")
+	}
 
 	if resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
