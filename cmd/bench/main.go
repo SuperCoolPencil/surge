@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/surge-downloader/surge/internal/engine/concurrent"
@@ -23,6 +24,7 @@ var (
 	flagServer = flag.Bool("server", false, "Run as benchmark server only")
 	flagPort   = flag.Int("port", 0, "Port to listen on (0 for random)")
 	flagSize   = flag.String("size", "2GB", "File size to serve (e.g. 500MB, 2GB)")
+	flagRate   = flag.String("rate", "0", "Rate limit (e.g. 500MB/s, 100kb/s). 0 for unlimited.")
 )
 
 func parseSize(s string) (int64, error) {
@@ -46,6 +48,25 @@ func parseSize(s string) (int64, error) {
 	return val * multiplier, nil
 }
 
+func parseRate(s string) (int64, error) {
+	if s == "0" || s == "" {
+		return 0, nil
+	}
+	s = strings.ToUpper(s)
+	// Remove /S or /s suffix if present
+	s = strings.TrimSuffix(s, "/S")
+	s = strings.TrimSuffix(s, "PS") // Mbps -> Mb
+
+	// Handle bits vs bytes? Convention: MB = megabytes, Mb = megabits
+	// For simplicity, let's assume Bytes unless 'b' is explicit, but typically benchmarks use Bytes.
+	// But standard network notation is bits.
+	// Let's stick to parseSize logic which is Bytes.
+	// If user says "500Mbps", we might want to convert to bytes.
+	// For now, let's treat everything as BYTES/s to be consistent with size flag.
+
+	return parseSize(s)
+}
+
 func main() {
 	flag.Parse()
 
@@ -55,10 +76,37 @@ func main() {
 		os.Exit(1)
 	}
 
+	resRate, err := parseRate(*flagRate)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid rate: %v\n", err)
+		os.Exit(1)
+	}
+
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
-		http.ServeContent(w, r, "bench.bin", time.Now(), &ZeroReader{Size: fileSize})
+		w.Header().Set("Accept-Ranges", "bytes") // Explicitly state support
+
+		reader := &ZeroReader{Size: fileSize}
+
+		// If range request, seek
+		rangeHeader := r.Header.Get("Range")
+		if rangeHeader != "" {
+			// Basic range handling for ZeroReader
+			// http.ServeContent handles parsing Range header and calling Seek
+		}
+
+		if resRate > 0 {
+			// Wrap with rate limiter
+			rReader := &RateLimitedReader{
+				R:     reader,
+				Limit: resRate,
+				Start: time.Now(),
+			}
+			http.ServeContent(w, r, "bench.bin", time.Now(), rReader)
+		} else {
+			http.ServeContent(w, r, "bench.bin", time.Now(), reader)
+		}
 	})
 
 	if *flagServer {
@@ -74,6 +122,9 @@ func main() {
 
 		url := fmt.Sprintf("http://%s/bench.bin", listener.Addr().String())
 		fmt.Printf("Server listening on %s\n", url)
+		if resRate > 0 {
+			fmt.Printf("Rate limit: %d bytes/s\n", resRate)
+		}
 
 		// Block forever
 		if err := http.Serve(listener, handler); err != nil {
@@ -84,11 +135,6 @@ func main() {
 	}
 
 	// Client Mode (Existing logic)
-	// Start an internal server anyway for the self-test if we are not connecting elsewhere
-	// But the purpose here is to test the download engine.
-	// We'll keep the existing logic that spins up a test server automatically
-	// because it's convenient for `go run ./cmd/bench`.
-
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -180,4 +226,38 @@ func (z *ZeroReader) Seek(offset int64, whence int) (int64, error) {
 	}
 	z.pos = newPos
 	return newPos, nil
+}
+
+// RateLimitedReader wraps a ReadSeeker and limits read speed
+type RateLimitedReader struct {
+	R         io.ReadSeeker
+	Limit     int64 // Bytes per second
+	Start     time.Time
+	ReadCount int64
+	mu        sync.Mutex
+}
+
+func (r *RateLimitedReader) Read(p []byte) (n int, err error) {
+	// Simple token bucket / target throttle implementation
+
+	n, err = r.R.Read(p)
+	if n > 0 {
+		r.mu.Lock()
+		r.ReadCount += int64(n)
+		totalRead := r.ReadCount
+		elapsed := time.Since(r.Start)
+		r.mu.Unlock()
+
+		// Expected time for totalRead bytes
+		expectedDuration := time.Duration(float64(totalRead) / float64(r.Limit) * float64(time.Second))
+		if expectedDuration > elapsed {
+			sleepTime := expectedDuration - elapsed
+			time.Sleep(sleepTime)
+		}
+	}
+	return n, err
+}
+
+func (r *RateLimitedReader) Seek(offset int64, whence int) (int64, error) {
+	return r.R.Seek(offset, whence)
 }

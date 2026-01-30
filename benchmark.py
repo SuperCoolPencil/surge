@@ -154,16 +154,17 @@ def check_aria2c() -> bool:
 # LOCAL SERVER
 # =============================================================================
 class LocalServer:
-    def __init__(self, bench_exec: Path, size: str = "2GB"):
+    def __init__(self, bench_exec: Path, size: str = "2GB", rate: str = "0"):
         self.bench_exec = bench_exec
         self.size = size
+        self.rate = rate
         self.process = None
         self.url = None
 
     def start(self):
         print("\n  Starting local benchmark server...")
         # Start the process
-        cmd = [str(self.bench_exec), "-server", "-port", "0", "-size", self.size]
+        cmd = [str(self.bench_exec), "-server", "-port", "0", "-size", self.size, "-rate", self.rate]
         self.process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -431,6 +432,7 @@ def main():
     # Feature flags
     parser.add_argument("--speedtest", action="store_true", help="Run network speedtest")
     parser.add_argument("--size", default="2GB", help="File size for local server (default: 2GB)")
+    parser.add_argument("--rate", default="0", help="Rate limit for local server e.g. 500MB (default: 0/unlimited)")
 
     args = parser.parse_args()
     
@@ -517,7 +519,7 @@ def main():
         # --- Start Server ---
         test_url = args.url
         if not test_url:
-            server = LocalServer(bench_exec, size=args.size)
+            server = LocalServer(bench_exec, size=args.size, rate=args.rate)
             server.start()
             test_url = server.url
         

@@ -23,7 +23,7 @@ const (
 	MaxChunk     = 16 * MB // Maximum chunk size
 	TargetChunk  = 8 * MB  // Target chunk size
 	AlignSize    = 4 * KB  // Align chunks to 4KB for filesystem
-	WorkerBuffer = 512 * KB
+	WorkerBuffer = 4 * MB
 
 	TasksPerWorker = 4  // Target tasks per connection
 	WriteQueueSize = 64 // Buffered async write requests
