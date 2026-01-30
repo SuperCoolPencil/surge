@@ -17,10 +17,10 @@ import (
 	"github.com/surge-downloader/surge/internal/utils"
 )
 
-// WriteRequest represents an async write operation
 type WriteRequest struct {
 	Data   []byte
 	Offset int64
+	BufPtr *[]byte // Pointer to original buffer for pool return
 }
 
 // ConcurrentDownloader handles multi-connection downloads
@@ -33,8 +33,7 @@ type ConcurrentDownloader struct {
 	URL          string // For pause/resume
 	DestPath     string // For pause/resume
 	Runtime      *types.RuntimeConfig
-	bufPool      sync.Pool // Pool for read buffers
-	writeBufPool sync.Pool // Pool for write request buffers
+	bufferPool   sync.Pool // Unified pool for read/write buffers
 	writeQueue   chan WriteRequest
 	writeErr     atomic.Pointer[error] // First write error, if any
 }
@@ -47,17 +46,9 @@ func NewConcurrentDownloader(id string, progressCh chan<- any, progState *types.
 		State:        progState,
 		activeTasks:  make(map[int]*ActiveTask),
 		Runtime:      runtime,
-		bufPool: sync.Pool{
+		bufferPool: sync.Pool{
 			New: func() any {
 				// Use configured buffer size
-				size := runtime.GetWorkerBufferSize()
-				buf := make([]byte, size)
-				return &buf
-			},
-		},
-		writeBufPool: sync.Pool{
-			New: func() any {
-				// Write buffers match read buffer size
 				size := runtime.GetWorkerBufferSize()
 				buf := make([]byte, size)
 				return &buf
@@ -329,7 +320,14 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl, destPath st
 				d.writeErr.CompareAndSwap(nil, &err)
 			}
 			// Return buffer to pool
-			d.writeBufPool.Put(&req.Data)
+			// Get buffer from request
+			bufPtr := req.BufPtr
+
+			if bufPtr != nil && cap(*bufPtr) == d.Runtime.GetWorkerBufferSize() {
+				// Reslice to full capacity to be safe for next user
+				*bufPtr = (*bufPtr)[:cap(*bufPtr)]
+				d.bufferPool.Put(bufPtr)
+			}
 		}
 	}()
 
