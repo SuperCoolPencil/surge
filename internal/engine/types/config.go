@@ -25,7 +25,8 @@ const (
 	AlignSize    = 4 * KB  // Align chunks to 4KB for filesystem
 	WorkerBuffer = 512 * KB
 
-	TasksPerWorker = 4 // Target tasks per connection
+	TasksPerWorker = 4  // Target tasks per connection
+	WriteQueueSize = 64 // Buffered async write requests
 )
 
 // Connection limits

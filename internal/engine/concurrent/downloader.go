@@ -9,12 +9,19 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/surge-downloader/surge/internal/engine/state"
 	"github.com/surge-downloader/surge/internal/engine/types"
 	"github.com/surge-downloader/surge/internal/utils"
 )
+
+// WriteRequest represents an async write operation
+type WriteRequest struct {
+	Data   []byte
+	Offset int64
+}
 
 // ConcurrentDownloader handles multi-connection downloads
 type ConcurrentDownloader struct {
@@ -26,7 +33,10 @@ type ConcurrentDownloader struct {
 	URL          string // For pause/resume
 	DestPath     string // For pause/resume
 	Runtime      *types.RuntimeConfig
-	bufPool      sync.Pool
+	bufPool      sync.Pool // Pool for read buffers
+	writeBufPool sync.Pool // Pool for write request buffers
+	writeQueue   chan WriteRequest
+	writeErr     atomic.Pointer[error] // First write error, if any
 }
 
 // NewConcurrentDownloader creates a new concurrent downloader with all required parameters
@@ -45,6 +55,15 @@ func NewConcurrentDownloader(id string, progressCh chan<- any, progState *types.
 				return &buf
 			},
 		},
+		writeBufPool: sync.Pool{
+			New: func() any {
+				// Write buffers match read buffer size
+				size := runtime.GetWorkerBufferSize()
+				buf := make([]byte, size)
+				return &buf
+			},
+		},
+		// writeQueue is created per-download in Download()
 	}
 }
 
@@ -297,6 +316,23 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl, destPath st
 		}
 	}()
 
+	// Initialize async write queue and start dedicated writer goroutine
+	d.writeQueue = make(chan WriteRequest, types.WriteQueueSize)
+	var writerWg sync.WaitGroup
+	writerWg.Add(1)
+	go func() {
+		defer writerWg.Done()
+		for req := range d.writeQueue {
+			_, err := outFile.WriteAt(req.Data, req.Offset)
+			if err != nil {
+				// Store first error only
+				d.writeErr.CompareAndSwap(nil, &err)
+			}
+			// Return buffer to pool
+			d.writeBufPool.Put(&req.Data)
+		}
+	}()
+
 	// Start workers
 	var wg sync.WaitGroup
 	workerErrors := make(chan error, numConns)
@@ -305,7 +341,7 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl, destPath st
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			err := d.worker(downloadCtx, workerID, rawurl, outFile, queue, fileSize, startTime, verbose, client)
+			err := d.worker(downloadCtx, workerID, rawurl, queue, fileSize, startTime, verbose, client)
 			if err != nil && err != context.Canceled {
 				workerErrors <- err
 			}
@@ -324,6 +360,17 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl, destPath st
 	for err := range workerErrors {
 		if err != nil {
 			downloadErr = err
+		}
+	}
+
+	// Shutdown writer: close queue and wait for all writes to complete
+	close(d.writeQueue)
+	writerWg.Wait()
+
+	// Check for write errors
+	if writeErr := d.writeErr.Load(); writeErr != nil {
+		if downloadErr == nil {
+			downloadErr = *writeErr
 		}
 	}
 

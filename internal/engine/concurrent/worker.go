@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"sync/atomic"
 	"time"
 
@@ -14,7 +13,7 @@ import (
 )
 
 // worker downloads tasks from the queue
-func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string, file *os.File, queue *TaskQueue, totalSize int64, startTime time.Time, verbose bool, client *http.Client) error {
+func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string, queue *TaskQueue, totalSize int64, startTime time.Time, verbose bool, client *http.Client) error {
 	// Get pooled buffer
 	bufPtr := d.bufPool.Get().(*[]byte)
 	defer d.bufPool.Put(bufPtr)
@@ -60,7 +59,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string
 			d.activeMu.Unlock()
 
 			taskStart := time.Now()
-			lastErr = d.downloadTask(taskCtx, rawurl, file, activeTask, buf, verbose, client)
+			lastErr = d.downloadTask(taskCtx, rawurl, activeTask, buf, verbose, client)
 
 			// CRITICAL: Capture external cancellation state BEFORE calling taskCancel()
 			// If we call taskCancel() first, taskCtx.Err() will always be non-nil
@@ -144,7 +143,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string
 }
 
 // downloadTask downloads a single byte range and writes to file at offset
-func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, file *os.File, activeTask *ActiveTask, buf []byte, verbose bool, client *http.Client) error {
+func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, activeTask *ActiveTask, buf []byte, verbose bool, client *http.Client) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawurl, nil)
 	if err != nil {
 		return err
@@ -224,9 +223,24 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 				}
 			}
 
-			_, writeErr := file.WriteAt(buf[:readSoFar], offset)
-			if writeErr != nil {
-				return fmt.Errorf("write error: %w", writeErr)
+			// Async write: get buffer from pool, copy data, send to writer
+			writeBufPtr := d.writeBufPool.Get().(*[]byte)
+			writeBuf := *writeBufPtr
+			copy(writeBuf[:readSoFar], buf[:readSoFar])
+
+			// Send to async writer (fire-and-forget)
+			select {
+			case d.writeQueue <- WriteRequest{Data: writeBuf[:readSoFar], Offset: offset}:
+				// Sent successfully
+			case <-ctx.Done():
+				// Context cancelled, return buffer and exit
+				d.writeBufPool.Put(writeBufPtr)
+				return ctx.Err()
+			}
+
+			// Check for write errors from previous writes
+			if writeErr := d.writeErr.Load(); writeErr != nil {
+				return fmt.Errorf("write error: %w", *writeErr)
 			}
 
 			now := time.Now()
