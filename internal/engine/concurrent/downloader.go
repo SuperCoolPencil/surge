@@ -296,23 +296,28 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, mirr
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 
-		maxSplits := 50
-		splitCount := 0
-
 		for {
 			select {
 			case <-balancerCtx.Done():
 				return
 			case <-ticker.C:
-				if queue.IdleWorkers() > 0 && splitCount < maxSplits {
+				// Aggressively fill idle workers
+				// Continue splitting/stealing as long as we have idle workers and are making progress
+				for queue.IdleWorkers() > 0 {
+					didWork := false
 					if queue.SplitLargestIfNeeded() {
-						splitCount++
-						utils.Debug("Balancer: split largest task (total splits: %d)", splitCount)
+						didWork = true
+						utils.Debug("Balancer: split largest task")
 					} else if queue.Len() == 0 {
 						// Try to steal from an active worker
 						if d.StealWork(queue) {
-							splitCount++
+							didWork = true
 						}
+					}
+
+					// If we couldn't split or steal anything, stop trying for this tick
+					if !didWork {
+						break
 					}
 				}
 			}
