@@ -507,11 +507,37 @@ func renderFocusedDetails(d *DownloadModel, w int) string {
 
 	fileInfo := lipgloss.JoinVertical(lipgloss.Left, fileInfoLines...)
 
-	// URL section - always shown
-	urlSection := lipgloss.JoinHorizontal(lipgloss.Left,
-		StatsLabelStyle.Render("URL:"),
-		lipgloss.NewStyle().Foreground(ColorLightGray).Render(truncateString(d.URL, contentWidth-14)),
-	)
+	// Mirrors/URL Section
+	// We replace specific URL section with a mirrors list if available
+	var sourceSection string
+
+	if d.state != nil && len(d.state.GetMirrors()) > 0 {
+		mirrors := d.state.GetMirrors()
+		var mirrorLines []string
+		mirrorLines = append(mirrorLines, StatsLabelStyle.Render("Mirrors:"))
+
+		for _, m := range mirrors {
+			icon := "✔"
+			color := ColorStateDone
+			if m.Error {
+				icon = "✖"
+				color = ColorStateError
+			}
+
+			line := lipgloss.JoinHorizontal(lipgloss.Left,
+				lipgloss.NewStyle().Foreground(color).PaddingRight(1).Render(icon),
+				lipgloss.NewStyle().Foreground(ColorLightGray).Render(truncateString(m.URL, contentWidth-16)),
+			)
+			mirrorLines = append(mirrorLines, line)
+		}
+		sourceSection = lipgloss.JoinVertical(lipgloss.Left, mirrorLines...)
+	} else {
+		// Fallback to simple URL line if no mirrors info available
+		sourceSection = lipgloss.JoinHorizontal(lipgloss.Left,
+			StatsLabelStyle.Render("URL:"),
+			lipgloss.NewStyle().Foreground(ColorLightGray).Render(truncateString(d.URL, contentWidth-14)),
+		)
+	}
 
 	IDSection := lipgloss.JoinHorizontal(lipgloss.Left,
 		StatsLabelStyle.Render("ID:"),
@@ -543,7 +569,7 @@ func renderFocusedDetails(d *DownloadModel, w int) string {
 			"",
 			divider,
 			"",
-			urlSection,
+			sourceSection,
 			IDSection,
 		)
 
@@ -571,6 +597,7 @@ func renderFocusedDetails(d *DownloadModel, w int) string {
 		content := lipgloss.JoinVertical(lipgloss.Left,
 			statusBox,
 			"",
+			IDSection,
 			fileInfo,
 			"",
 			divider,
@@ -579,8 +606,7 @@ func renderFocusedDetails(d *DownloadModel, w int) string {
 			"",
 			divider,
 			"",
-			urlSection,
-			IDSection,
+			sourceSection,
 		)
 
 		return lipgloss.NewStyle().
@@ -625,7 +651,7 @@ func renderFocusedDetails(d *DownloadModel, w int) string {
 			"",
 			divider,
 			"",
-			urlSection,
+			sourceSection,
 			IDSection,
 		)
 
@@ -687,7 +713,7 @@ func renderFocusedDetails(d *DownloadModel, w int) string {
 		"",
 		divider,
 		"",
-		urlSection,
+		sourceSection,
 		IDSection,
 	)
 
