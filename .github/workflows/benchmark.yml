@@ -84,8 +84,6 @@ jobs:
           # Run benchmark using the variables
           python3 benchmark.py \
             $BASELINE_FLAG \
-            --aria2 \
-            --axel \
             --speedtest \
             --mirror-suite
             -n "$BENCH_ITERATIONS" | tee benchmark_output.txt

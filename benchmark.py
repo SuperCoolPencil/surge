@@ -460,9 +460,9 @@ def main():
         print("\n  [MODE] Mirror Benchmark Suite")
         # Hetzner 10GB files
         base_urls = [
-            "https://ash-speed.hetzner.com/10GB.bin",
-            "https://hil-speed.hetzner.com/10GB.bin",
-            "https://sin-speed.hetzner.com/10GB.bin",
+            "https://distrib-coffee.ipsl.jussieu.fr/pub/linux/ubuntu-releases/noble/ubuntu-24.04.3-desktop-amd64.iso",
+            "https://mirror.cedia.org.ec/ubuntu-releases/24.04.3/ubuntu-24.04.3-desktop-amd64.iso",
+            "https://mirror.bharatdatacenter.com/ubuntu-releases/noble/ubuntu-24.04.3-desktop-amd64.iso",
         ]
         # Default to 5 iterations if not specified
         if num_iterations == 1:
