@@ -156,8 +156,8 @@ func (d *ConcurrentDownloader) newConcurrentClient(numConns int) *http.Client {
 
 // Download downloads a file using multiple concurrent connections
 // Uses pre-probed metadata (file size already known)
-func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl, destPath string, fileSize int64, verbose bool) error {
-	utils.Debug("ConcurrentDownloader.Download: %s -> %s (size: %d)", rawurl, destPath, fileSize)
+func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, mirrors []string, destPath string, fileSize int64, verbose bool) error {
+	utils.Debug("ConcurrentDownloader.Download: %s -> %s (size: %d, mirrors: %d)", rawurl, destPath, fileSize, len(mirrors))
 
 	// Store URL and path for pause/resume (final path without .surge)
 	d.URL = rawurl
@@ -306,7 +306,7 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl, destPath st
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			err := d.worker(downloadCtx, workerID, rawurl, outFile, queue, fileSize, startTime, verbose, client)
+			err := d.worker(downloadCtx, workerID, rawurl, mirrors, outFile, queue, fileSize, startTime, verbose, client)
 			if err != nil && err != context.Canceled {
 				workerErrors <- err
 			}

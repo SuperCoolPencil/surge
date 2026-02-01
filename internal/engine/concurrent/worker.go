@@ -14,7 +14,7 @@ import (
 )
 
 // worker downloads tasks from the queue
-func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string, file *os.File, queue *TaskQueue, totalSize int64, startTime time.Time, verbose bool, client *http.Client) error {
+func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string, mirrors []string, file *os.File, queue *TaskQueue, totalSize int64, startTime time.Time, verbose bool, client *http.Client) error {
 	// Get pooled buffer
 	bufPtr := d.bufPool.Get().(*[]byte)
 	defer d.bufPool.Put(bufPtr)
@@ -22,6 +22,20 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string
 
 	utils.Debug("Worker %d started", id)
 	defer utils.Debug("Worker %d finished", id)
+
+	// Combine primary URL with mirrors for specific worker usage
+	// Ensure primary URL is in the list if not already (logic in caller or here?)
+	// Caller (Download) passes rawurl and mirrors.
+	// Let's create a unified list for rotation
+	allMirrors := []string{rawurl}
+	for _, m := range mirrors {
+		if m != rawurl {
+			allMirrors = append(allMirrors, m)
+		}
+	}
+
+	// Initial mirror assignment: Round Robin based on ID
+	currentMirrorIdx := id % len(allMirrors)
 
 	for {
 		// Get next task
@@ -41,7 +55,14 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string
 		for attempt := 0; attempt < maxRetries; attempt++ {
 			if attempt > 0 {
 				time.Sleep(time.Duration(1<<attempt) * types.RetryBaseDelay) //Exponential backoff incase of failure
+
+				// FAILOVER: Switch mirror on retry
+				currentMirrorIdx = (currentMirrorIdx + 1) % len(allMirrors)
+				utils.Debug("Worker %d: switching to mirror %s (attempt %d)", id, allMirrors[currentMirrorIdx], attempt+1)
 			}
+
+			// Use current mirror
+			currentURL := allMirrors[currentMirrorIdx]
 
 			// Register active task with per-task cancellable context
 			taskCtx, taskCancel := context.WithCancel(ctx)
@@ -60,7 +81,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string
 			d.activeMu.Unlock()
 
 			taskStart := time.Now()
-			lastErr = d.downloadTask(taskCtx, rawurl, file, activeTask, buf, verbose, client)
+			lastErr = d.downloadTask(taskCtx, currentURL, file, activeTask, buf, verbose, client)
 
 			// CRITICAL: Capture external cancellation state BEFORE calling taskCancel()
 			// If we call taskCancel() first, taskCtx.Err() will always be non-nil
