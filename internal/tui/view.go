@@ -672,6 +672,33 @@ func renderFocusedDetails(d *DownloadModel, w int) string {
 		lipgloss.JoinHorizontal(lipgloss.Left, StatsLabelStyle.Render("Elapsed:"), StatsValueStyle.Render(d.Elapsed.Round(time.Second).String())),
 	)
 
+	// Mirrors Section
+	var mirrorsSection string
+	if d.state != nil {
+		mirrors := d.state.GetMirrors()
+		if len(mirrors) > 0 {
+			var mirrorLines []string
+			mirrorLines = append(mirrorLines, StatsLabelStyle.Render("Mirrors:"))
+
+			for _, m := range mirrors {
+				icon := "✔"
+				color := ColorStateDone
+				if m.Error {
+					icon = "✖"
+					color = ColorStateError
+				}
+
+				line := lipgloss.JoinHorizontal(lipgloss.Left,
+					lipgloss.NewStyle().Foreground(color).PaddingRight(1).Render(icon),
+					lipgloss.NewStyle().Foreground(ColorLightGray).Render(truncateString(m.URL, contentWidth-16)),
+				)
+				mirrorLines = append(mirrorLines, line)
+			}
+
+			mirrorsSection = lipgloss.JoinVertical(lipgloss.Left, mirrorLines...)
+		}
+	}
+
 	// Combine all sections with status box at top
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		statusBox,
@@ -689,6 +716,8 @@ func renderFocusedDetails(d *DownloadModel, w int) string {
 		"",
 		urlSection,
 		IDSection,
+		"",
+		mirrorsSection,
 	)
 
 	// Wrap in a container with reduced padding

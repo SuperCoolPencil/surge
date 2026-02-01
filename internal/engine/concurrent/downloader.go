@@ -70,6 +70,27 @@ func (d *ConcurrentDownloader) getInitialConnections(fileSize int64) int {
 	return recConns
 }
 
+// ReportMirrorError marks a mirror as having an error in the state
+func (d *ConcurrentDownloader) ReportMirrorError(url string) {
+	if d.State == nil {
+		return
+	}
+
+	mirrors := d.State.GetMirrors()
+	changed := false
+	for i, m := range mirrors {
+		if m.URL == url && !m.Error {
+			mirrors[i].Error = true
+			changed = true
+			break
+		}
+	}
+
+	if changed {
+		d.State.SetMirrors(mirrors)
+	}
+}
+
 // calculateChunkSize determines optimal chunk size
 func (d *ConcurrentDownloader) calculateChunkSize(fileSize int64, numConns int) int64 {
 	targetChunks := int64(numConns * types.TasksPerWorker)
@@ -162,6 +183,20 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, mirr
 	// Store URL and path for pause/resume (final path without .surge)
 	d.URL = rawurl
 	d.DestPath = destPath
+
+	// Initialize mirror status in state
+	if d.State != nil {
+		var statuses []types.MirrorStatus
+		// Add primary
+		statuses = append(statuses, types.MirrorStatus{URL: rawurl, Active: true})
+		// Add others
+		for _, m := range mirrors {
+			if m != rawurl {
+				statuses = append(statuses, types.MirrorStatus{URL: m, Active: true})
+			}
+		}
+		d.State.SetMirrors(statuses)
+	}
 
 	// Working file has .surge suffix until download completes
 	workingPath := destPath + types.IncompleteSuffix

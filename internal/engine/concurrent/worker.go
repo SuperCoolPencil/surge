@@ -57,6 +57,9 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string
 				time.Sleep(time.Duration(1<<attempt) * types.RetryBaseDelay) //Exponential backoff incase of failure
 
 				// FAILOVER: Switch mirror on retry
+				// Report error for the previous mirror
+				d.ReportMirrorError(allMirrors[currentMirrorIdx])
+
 				currentMirrorIdx = (currentMirrorIdx + 1) % len(allMirrors)
 				utils.Debug("Worker %d: switching to mirror %s (attempt %d)", id, allMirrors[currentMirrorIdx], attempt+1)
 			}
