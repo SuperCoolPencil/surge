@@ -97,10 +97,11 @@ type RootModel struct {
 	historyCursor  int
 
 	// Duplicate detection
-	pendingURL      string // URL pending confirmation
-	pendingPath     string // Path pending confirmation
-	pendingFilename string // Filename pending confirmation
-	duplicateInfo   string // Info about the duplicate
+	pendingURL      string   // URL pending confirmation
+	pendingPath     string   // Path pending confirmation
+	pendingFilename string   // Filename pending confirmation
+	pendingMirrors  []string // Mirrors pending confirmation
+	duplicateInfo   string   // Info about the duplicate
 
 	// Graph Data
 	SpeedHistory           []float64 // Stores the last ~60 ticks of speed data
