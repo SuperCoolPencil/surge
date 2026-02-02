@@ -350,7 +350,8 @@ def main():
     if args.speedtest and shutil.which("speedtest-cli"):
         print("\nRunning network baseline...")
         _, out = run_command(["speedtest-cli", "--simple"], timeout=60)
-        print(f"  {out.strip().replace('\n', ' | ')}")
+        formatted_out = out.strip().replace('\n', ' | ')
+        print(f"  {formatted_out}")
 
     # Execution Loop
     print(f"\n🚀 Running {len(tasks)} benchmarks x {num_iterations} iterations...")

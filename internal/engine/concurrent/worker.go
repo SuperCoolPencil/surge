@@ -225,7 +225,16 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 		readSoFar := 0
 		var readErr error
 
+		readStart := time.Now()
 		for readSoFar < int(readSize) {
+			// Time-based flush for UI responsiveness
+			// If we have some data and it's been > 500ms since we started filling this large buffer,
+			// stop reading and write what we have. This ensures the UI updates at least every ~500ms
+			// even on slow connections filling a 4MB buffer.
+			if readSoFar > 0 && time.Since(readStart) > 500*time.Millisecond {
+				break
+			}
+
 			n, err := resp.Body.Read(buf[readSoFar:readSize])
 			if n > 0 {
 				readSoFar += n
