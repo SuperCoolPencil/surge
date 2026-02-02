@@ -107,6 +107,11 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string
 			// but parent context is still fine
 			if wasExternallyCancelled && lastErr != nil {
 				// Health monitor cancelled this task - re-queue REMAINING work only
+
+				// Force rotation to next mirror to avoid getting stuck on the slow one
+				currentMirrorIdx = (currentMirrorIdx + 1) % len(allMirrors)
+				utils.Debug("Worker %d: Health check cancelled task, rotating to mirror %s", id, allMirrors[currentMirrorIdx])
+
 				if remaining := activeTask.RemainingTask(); remaining != nil {
 					// Clamp to original task end (don't go past original boundary)
 					originalEnd := task.Offset + task.Length
