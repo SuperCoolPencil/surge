@@ -14,7 +14,7 @@ import (
 )
 
 // worker downloads tasks from the queue
-func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string, mirrors []string, file *os.File, queue *TaskQueue, totalSize int64, startTime time.Time, verbose bool, client *http.Client) error {
+func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []string, file *os.File, queue *TaskQueue, totalSize int64, startTime time.Time, verbose bool, client *http.Client) error {
 	// Get pooled buffer
 	bufPtr := d.bufPool.Get().(*[]byte)
 	defer d.bufPool.Put(bufPtr)
@@ -23,19 +23,8 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string
 	utils.Debug("Worker %d started", id)
 	defer utils.Debug("Worker %d finished", id)
 
-	// Combine primary URL with mirrors for specific worker usage
-	// Ensure primary URL is in the list if not already (logic in caller or here?)
-	// Caller (Download) passes rawurl and mirrors.
-	// Let's create a unified list for rotation
-	allMirrors := []string{rawurl}
-	for _, m := range mirrors {
-		if m != rawurl {
-			allMirrors = append(allMirrors, m)
-		}
-	}
-
 	// Initial mirror assignment: Round Robin based on ID
-	currentMirrorIdx := id % len(allMirrors)
+	currentMirrorIdx := id % len(mirrors)
 
 	for {
 		// Get next task
@@ -54,18 +43,21 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string
 		maxRetries := d.Runtime.GetMaxTaskRetries()
 		for attempt := 0; attempt < maxRetries; attempt++ {
 			if attempt > 0 {
-				time.Sleep(time.Duration(1<<attempt) * types.RetryBaseDelay) //Exponential backoff incase of failure
+
+				if len(mirrors) == 1 {
+					time.Sleep(time.Duration(1<<attempt) * types.RetryBaseDelay) //Exponential backoff incase of failure
+				}
 
 				// FAILOVER: Switch mirror on retry
 				// Report error for the previous mirror
-				d.ReportMirrorError(allMirrors[currentMirrorIdx])
+				d.ReportMirrorError(mirrors[currentMirrorIdx])
 
-				currentMirrorIdx = (currentMirrorIdx + 1) % len(allMirrors)
-				utils.Debug("Worker %d: switching to mirror %s (attempt %d)", id, allMirrors[currentMirrorIdx], attempt+1)
+				currentMirrorIdx = (currentMirrorIdx + 1) % len(mirrors)
+				utils.Debug("Worker %d: switching to mirror %s (attempt %d)", id, mirrors[currentMirrorIdx], attempt+1)
 			}
 
 			// Use current mirror
-			currentURL := allMirrors[currentMirrorIdx]
+			currentURL := mirrors[currentMirrorIdx]
 
 			// Register active task with per-task cancellable context
 			taskCtx, taskCancel := context.WithCancel(ctx)
@@ -109,8 +101,8 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, rawurl string
 				// Health monitor cancelled this task - re-queue REMAINING work only
 
 				// Force rotation to next mirror to avoid getting stuck on the slow one
-				currentMirrorIdx = (currentMirrorIdx + 1) % len(allMirrors)
-				utils.Debug("Worker %d: Health check cancelled task, rotating to mirror %s", id, allMirrors[currentMirrorIdx])
+				currentMirrorIdx = (currentMirrorIdx + 1) % len(mirrors)
+				utils.Debug("Worker %d: Health check cancelled task, rotating from mirror %s to %s", id, mirrors[(currentMirrorIdx+len(mirrors)-1)%len(mirrors)], mirrors[currentMirrorIdx])
 
 				if remaining := activeTask.RemainingTask(); remaining != nil {
 					// Clamp to original task end (don't go past original boundary)

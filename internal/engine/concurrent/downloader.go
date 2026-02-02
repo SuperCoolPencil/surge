@@ -293,7 +293,7 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, mirr
 	defer cancelBalancer()
 
 	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
+		ticker := time.NewTicker(50 * time.Millisecond)
 		defer ticker.Stop()
 
 		for {
@@ -326,7 +326,7 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, mirr
 
 	// Monitor for completion
 	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
+		ticker := time.NewTicker(50 * time.Millisecond)
 		defer ticker.Stop()
 
 		for {
@@ -367,11 +367,38 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, mirr
 	var wg sync.WaitGroup
 	workerErrors := make(chan error, numConns)
 
+	// Combine primary + secondary for workers
+	// We want to ensure the primary is included if it was valid (it should be, otherwise ProbeMirrors fails for it)
+	// But let's build the final worker list explicitly
+	var workerMirrors []string
+
+	// Add primary if compatible (it should be in 'valid' list if it passed probe)
+	primaryOK := false
+	for _, v := range valid {
+		if v == rawurl {
+			primaryOK = true
+			break
+		}
+	}
+	if primaryOK {
+		workerMirrors = append(workerMirrors, rawurl)
+	}
+	// Add other valid mirrors
+	for _, v := range validSecondary {
+		workerMirrors = append(workerMirrors, v)
+	}
+
+	// Double check we have at least one mirror
+	if len(workerMirrors) == 0 {
+		// Should have been caught by early check but safe fallback
+		workerMirrors = []string{rawurl}
+	}
+
 	for i := 0; i < numConns; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			err := d.worker(downloadCtx, workerID, rawurl, mirrors, outFile, queue, fileSize, startTime, verbose, client)
+			err := d.worker(downloadCtx, workerID, workerMirrors, outFile, queue, fileSize, startTime, verbose, client)
 			if err != nil && err != context.Canceled {
 				workerErrors <- err
 			}
