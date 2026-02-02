@@ -37,12 +37,12 @@ func (m RootModel) View() string {
 		labelStyle := lipgloss.NewStyle().Width(10).Foreground(ColorLightGray)
 		// Centered popup - compact layout
 		hintStyle := lipgloss.NewStyle().MarginLeft(1).Foreground(ColorLightGray) // Secondary
-		if m.focusedInput == 1 {
+		if m.focusedInput == 2 {
 			hintStyle = lipgloss.NewStyle().MarginLeft(1).Foreground(ColorNeonPink) // Highlighted
 		}
 		pathLine := lipgloss.JoinHorizontal(lipgloss.Left,
 			labelStyle.Render("Path:"),
-			m.inputs[1].View(),
+			m.inputs[2].View(),
 			hintStyle.Render("[Tab] Browse"),
 		)
 
@@ -51,9 +51,11 @@ func (m RootModel) View() string {
 			"", // Top spacer
 			lipgloss.JoinHorizontal(lipgloss.Left, labelStyle.Render("URL:"), m.inputs[0].View()),
 			"", // Spacer
+			lipgloss.JoinHorizontal(lipgloss.Left, labelStyle.Render("Mirrors:"), m.inputs[1].View()),
+			"", // Spacer
 			pathLine,
 			"", // Spacer
-			lipgloss.JoinHorizontal(lipgloss.Left, labelStyle.Render("Filename:"), m.inputs[2].View()),
+			lipgloss.JoinHorizontal(lipgloss.Left, labelStyle.Render("Filename:"), m.inputs[3].View()),
 			"", // Bottom spacer
 			"",
 			// Render dynamic help

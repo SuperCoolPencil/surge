@@ -462,7 +462,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.state = SettingsState
 					return m, nil
 				}
-				m.inputs[1].SetValue(path)
+				m.inputs[2].SetValue(path)
 				m.state = InputState
 				return m, nil
 			}
@@ -589,10 +589,12 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if defaultDir == "" {
 					defaultDir = "."
 				}
-				m.inputs[1].SetValue(defaultDir)
-				m.inputs[1].Blur()
-				m.inputs[2].SetValue("")
+				m.inputs[2].SetValue(defaultDir)
 				m.inputs[2].Blur()
+				m.inputs[3].SetValue("")
+				m.inputs[3].Blur()
+				m.inputs[1].SetValue("") // Clear mirrors
+				m.inputs[1].Blur()
 
 				// Check clipboard for URL if setting is enabled
 				if m.Settings.General.ClipboardMonitor {
@@ -794,14 +796,14 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			// Tab to open file picker when on path input
-			if key.Matches(msg, m.keys.Input.Tab) && m.focusedInput == 1 {
+			if key.Matches(msg, m.keys.Input.Tab) && m.focusedInput == 2 {
 				m.state = FilePickerState
 				m.filepicker = newFilepicker(m.PWD)
 				return m, m.filepicker.Init()
 			}
 			if key.Matches(msg, m.keys.Input.Enter) {
-				// Navigate through inputs: URL -> Path -> Filename -> Start
-				if m.focusedInput < 2 {
+				// Navigate through inputs: URL -> Mirrors -> Path -> Filename -> Start
+				if m.focusedInput < 3 {
 					m.inputs[m.focusedInput].Blur()
 					m.focusedInput++
 					m.inputs[m.focusedInput].Focus()
@@ -815,10 +817,11 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.inputs[0].Focus()
 					m.inputs[1].Blur()
 					m.inputs[2].Blur()
+					m.inputs[3].Blur()
 					return m, nil
 				}
 
-				// Parse comma-separated URLs
+				// Parse comma-separated URLs from primary input (backward compatibility)
 				parts := strings.Split(inputVal, ",")
 				var url string
 				var mirrors []string
@@ -831,9 +834,22 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// First valid URL is primary
 					if url == "" {
 						url = cleaned
+					} else {
+						// Add others as mirrors
+						mirrors = append(mirrors, cleaned)
 					}
-					// Add all valid URLs to mirrors list
-					mirrors = append(mirrors, cleaned)
+				}
+
+				// Parse mirrors from dedicated input
+				mirrorsVal := m.inputs[1].Value()
+				if mirrorsVal != "" {
+					mirrorParts := strings.Split(mirrorsVal, ",")
+					for _, part := range mirrorParts {
+						cleaned := strings.TrimSpace(part)
+						if cleaned != "" {
+							mirrors = append(mirrors, cleaned)
+						}
+					}
 				}
 
 				if url == "" {
@@ -843,14 +859,14 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 
-				path := m.inputs[1].Value()
+				path := m.inputs[2].Value()
 				if path == "" {
 					path = m.Settings.General.DefaultDownloadDir
 					if path == "" {
 						path = "."
 					}
 				}
-				filename := m.inputs[2].Value()
+				filename := m.inputs[3].Value()
 
 				// Check for duplicate URL
 				if d := m.checkForDuplicate(url); d != nil {
@@ -864,6 +880,12 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				m.state = DashboardState
+				// Clear inputs
+				m.inputs[0].SetValue("")
+				m.inputs[1].SetValue("")
+				m.inputs[2].SetValue(path) // Keep path
+				m.inputs[3].SetValue("")
+
 				return m.startDownload(url, mirrors, path, filename, "")
 			}
 
@@ -874,7 +896,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.inputs[m.focusedInput].Focus()
 				return m, nil
 			}
-			if key.Matches(msg, m.keys.Input.Down) && m.focusedInput < 2 {
+			if key.Matches(msg, m.keys.Input.Down) && m.focusedInput < 3 {
 				m.inputs[m.focusedInput].Blur()
 				m.focusedInput++
 				m.inputs[m.focusedInput].Focus()
@@ -916,7 +938,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.state = SettingsState
 					return m, nil
 				}
-				m.inputs[1].SetValue(m.filepicker.CurrentDirectory)
+				m.inputs[2].SetValue(m.filepicker.CurrentDirectory)
 				m.state = InputState
 				return m, nil
 			}
@@ -934,7 +956,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				// Set the path input value and return to input state
-				m.inputs[1].SetValue(path)
+				m.inputs[2].SetValue(path)
 				m.state = InputState
 				return m, nil
 			}

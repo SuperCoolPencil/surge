@@ -181,6 +181,11 @@ func InitialRootModel(serverPort int, currentVersion string, pool *download.Work
 	filenameInput.Width = InputWidth
 	filenameInput.Prompt = ""
 
+	mirrorsInput := textinput.New()
+	mirrorsInput.Placeholder = "http://mirror1.com, http://mirror2.com"
+	mirrorsInput.Width = InputWidth
+	mirrorsInput.Prompt = ""
+
 	pwd, _ := os.Getwd()
 
 	// Initialize file picker for directory selection - default to Downloads folder
@@ -343,7 +348,7 @@ func InitialRootModel(serverPort int, currentVersion string, pool *download.Work
 
 	m := RootModel{
 		downloads:             downloads,
-		inputs:                []textinput.Model{urlInput, pathInput, filenameInput},
+		inputs:                []textinput.Model{urlInput, mirrorsInput, pathInput, filenameInput},
 		state:                 DashboardState,
 		progressChan:          progressChan,
 		filepicker:            fp,
