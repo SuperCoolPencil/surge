@@ -51,23 +51,22 @@ func NewConcurrentDownloader(id string, progressCh chan<- any, progState *types.
 // getInitialConnections returns the starting number of connections based on file size
 func (d *ConcurrentDownloader) getInitialConnections(fileSize int64) int {
 	maxConns := d.Runtime.GetMaxConnectionsPerHost()
+	minChunk := d.Runtime.GetMinChunkSize()
 
-	var recConns int
-	switch {
-	case fileSize < 10*types.MB:
-		recConns = 1
-	case fileSize < 100*types.MB:
-		recConns = 4
-	case fileSize < 500*types.MB:
-		recConns = 16
-	default:
-		recConns = maxConns
+	if minChunk <= 0 {
+		return 1
 	}
 
-	if recConns > maxConns {
-		return maxConns
+	// Calculate how many chunks we can fit
+	possibleChunks := int(fileSize / minChunk)
+	if possibleChunks == 0 {
+		return 1
 	}
-	return recConns
+
+	if possibleChunks < maxConns {
+		return possibleChunks
+	}
+	return maxConns
 }
 
 // ReportMirrorError marks a mirror as having an error in the state
@@ -93,9 +92,6 @@ func (d *ConcurrentDownloader) ReportMirrorError(url string) {
 
 // calculateChunkSize determines optimal chunk size
 func (d *ConcurrentDownloader) calculateChunkSize(fileSize int64, numConns int) int64 {
-	if numConns <= 0 {
-		return d.Runtime.GetTargetChunkSize() // Fallback
-	}
 
 	chunkSize := fileSize / int64(numConns)
 
@@ -300,10 +296,7 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 				// Continue splitting/stealing as long as we have idle workers and are making progress
 				for queue.IdleWorkers() > 0 {
 					didWork := false
-					if queue.SplitLargestIfNeeded() {
-						didWork = true
-						utils.Debug("Balancer: split largest task")
-					} else if queue.Len() == 0 {
+					if queue.Len() == 0 {
 						// Try to steal from an active worker
 						if d.StealWork(queue) {
 							didWork = true

@@ -19,13 +19,9 @@ const (
 
 // Chunk size constants for concurrent downloads
 const (
-	MinChunk     = 2 * MB  // Minimum chunk size
-	MaxChunk     = 16 * MB // Maximum chunk size
-	TargetChunk  = 8 * MB  // Target chunk size
-	AlignSize    = 4 * KB  // Align chunks to 4KB for filesystem
+	MinChunk     = 2 * MB // Minimum chunk size
+	AlignSize    = 4 * KB // Align chunks to 4KB for filesystem
 	WorkerBuffer = 512 * KB
-
-	TasksPerWorker = 4 // Target tasks per connection
 )
 
 // Connection limits
@@ -103,22 +99,6 @@ func (r *RuntimeConfig) GetMinChunkSize() int64 {
 		return MinChunk
 	}
 	return r.MinChunkSize
-}
-
-// GetMaxChunkSize returns configured value or default
-func (r *RuntimeConfig) GetMaxChunkSize() int64 {
-	if r == nil || r.MaxChunkSize <= 0 {
-		return MaxChunk
-	}
-	return r.MaxChunkSize
-}
-
-// GetTargetChunkSize returns configured value or default
-func (r *RuntimeConfig) GetTargetChunkSize() int64 {
-	if r == nil || r.TargetChunkSize <= 0 {
-		return TargetChunk
-	}
-	return r.TargetChunkSize
 }
 
 // GetWorkerBufferSize returns configured value or default
