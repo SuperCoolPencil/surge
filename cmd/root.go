@@ -611,81 +611,60 @@ type DownloadRequest struct {
 	Headers              map[string]string `json:"headers,omitempty"`       // Custom HTTP headers from browser (cookies, auth, etc.)
 }
 
-func handleDownload(w http.ResponseWriter, r *http.Request, defaultOutputDir string, service core.DownloadService) {
-	// GET request to query status
-	if r.Method == http.MethodGet {
-		id := r.URL.Query().Get("id")
-		if id == "" {
-			http.Error(w, "Missing id parameter", http.StatusBadRequest)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-
-		if service == nil {
-			http.Error(w, "Service unavailable", http.StatusInternalServerError)
-			return
-		}
-
-		status, err := service.GetStatus(id)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-
-		if err := json.NewEncoder(w).Encode(status); err != nil {
-			utils.Debug("Failed to encode response: %v", err)
-		}
+func handleDownloadGet(w http.ResponseWriter, r *http.Request, service core.DownloadService) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "Missing id parameter", http.StatusBadRequest)
 		return
 	}
 
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	w.Header().Set("Content-Type", "application/json")
+
+	if service == nil {
+		http.Error(w, "Service unavailable", http.StatusInternalServerError)
 		return
 	}
 
-	// Load settings once for use throughout the function
-	settings, err := config.LoadSettings()
+	status, err := service.GetStatus(id)
 	if err != nil {
-		// Fallback to defaults if loading fails (though LoadSettings handles missing file)
-		settings = config.DefaultSettings()
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
 	}
 
+	if err := json.NewEncoder(w).Encode(status); err != nil {
+		utils.Debug("Failed to encode response: %v", err)
+	}
+}
+
+func parseDownloadRequest(r *http.Request) (DownloadRequest, error) {
 	var req DownloadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
-		return
+		return req, fmt.Errorf("Invalid JSON: %w", err)
 	}
 	defer func() {
 		if err := r.Body.Close(); err != nil {
 			utils.Debug("Error closing body: %v", err)
 		}
 	}()
+	return req, nil
+}
 
+func validateDownloadRequest(req DownloadRequest) error {
 	if req.URL == "" {
-		http.Error(w, "URL is required", http.StatusBadRequest)
-		return
+		return fmt.Errorf("URL is required")
 	}
 
 	if strings.Contains(req.Path, "..") || strings.Contains(req.Filename, "..") {
-		http.Error(w, "Invalid path", http.StatusBadRequest)
-		return
+		return fmt.Errorf("Invalid path")
 	}
 	if strings.Contains(req.Filename, "/") || strings.Contains(req.Filename, "\\") {
-		http.Error(w, "Invalid filename", http.StatusBadRequest)
-		return
+		return fmt.Errorf("Invalid filename")
 	}
+	return nil
+}
 
-	utils.Debug("Received download request: URL=%s, Path=%s", utils.SanitizeURL(req.URL), req.Path)
-
-	downloadID := uuid.New().String()
-	if service == nil {
-		http.Error(w, "Service unavailable", http.StatusInternalServerError)
-		return
-	}
-
+func resolveDownloadPath(baseDir string, defaultOutputDir string, req DownloadRequest) (string, error) {
 	// Resolve base directory
-	baseDir := settings.General.DefaultDownloadDir
 	if baseDir == "" {
 		baseDir = defaultOutputDir
 	}
@@ -711,30 +690,24 @@ func handleDownload(w http.ResponseWriter, r *http.Request, defaultOutputDir str
 	// This prevents arbitrary file writes via the API
 	rel, err := filepath.Rel(baseDir, outPath)
 	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
-		http.Error(w, "Invalid path: download path must be within the default download directory", http.StatusForbidden)
-		return
+		return "", fmt.Errorf("invalid path: download path must be within the default download directory")
 	}
 
 	// Create directory
 	if err := os.MkdirAll(outPath, 0o755); err != nil {
-		http.Error(w, "Failed to create directory: "+err.Error(), http.StatusInternalServerError)
-		return
+		return "", fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	// Check settings for extension prompt and duplicates
-	// Logic modified to distinguish between ACTIVE (corruption risk) and COMPLETED (overwrite safe)
+	return outPath, nil
+}
+
+func checkDownloadDuplicate(urlForAdd string) (bool, bool) {
 	isDuplicate := false
 	isActive := false
 
-	urlForAdd := req.URL
-	mirrorsForAdd := req.Mirrors
-	if len(mirrorsForAdd) == 0 && strings.Contains(req.URL, ",") {
-		urlForAdd, mirrorsForAdd = ParseURLArg(req.URL)
-	}
-
 	if GlobalPool.HasDownload(urlForAdd) {
 		isDuplicate = true
-		// Check if specifically active\
+		// Check if specifically active
 		allActive := GlobalPool.GetAll()
 		for _, c := range allActive {
 			if c.URL == urlForAdd {
@@ -745,6 +718,119 @@ func handleDownload(w http.ResponseWriter, r *http.Request, defaultOutputDir str
 			}
 		}
 	}
+	return isDuplicate, isActive
+}
+
+func handleExtensionPrompt(w http.ResponseWriter, req DownloadRequest, urlForAdd string, mirrorsForAdd []string, outPath string, isDuplicate bool, service core.DownloadService, settings *config.Settings) bool {
+	// Logic for prompting:
+	// 1. If ExtensionPrompt is enabled
+	// 2. OR if WarnOnDuplicate is enabled AND it is a duplicate
+	shouldPrompt := settings.General.ExtensionPrompt || (settings.General.WarnOnDuplicate && isDuplicate)
+
+	// Only prompt if we have a UI running (serverProgram != nil)
+	if shouldPrompt {
+		if serverProgram != nil {
+			utils.Debug("Requesting TUI confirmation for: %s (Duplicate: %v)", utils.SanitizeURL(req.URL), isDuplicate)
+
+			downloadID := uuid.New().String()
+
+			// Send request to TUI
+			if err := service.Publish(events.DownloadRequestMsg{
+				ID:       downloadID,
+				URL:      urlForAdd,
+				Filename: req.Filename,
+				Path:     outPath, // Use the path we resolved (default or requested)
+				Mirrors:  mirrorsForAdd,
+				Headers:  req.Headers,
+			}); err != nil {
+				http.Error(w, "Failed to notify TUI: "+err.Error(), http.StatusInternalServerError)
+				return true
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			// Return 202 Accepted to indicate it's pending approval
+			w.WriteHeader(http.StatusAccepted)
+			if err := json.NewEncoder(w).Encode(map[string]string{
+				"status":  "pending_approval",
+				"message": "Download request sent to TUI for confirmation",
+				"id":      downloadID, // ID might change if user modifies it, but useful for tracking
+			}); err != nil {
+				utils.Debug("Failed to encode response: %v", err)
+			}
+			return true
+		} else {
+			// Headless mode check
+			if settings.General.ExtensionPrompt || (settings.General.WarnOnDuplicate && isDuplicate) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				if err := json.NewEncoder(w).Encode(map[string]string{
+					"status":  "error",
+					"message": "Download rejected: Duplicate download or approval required (Headless mode)",
+				}); err != nil {
+					utils.Debug("Failed to encode response: %v", err)
+				}
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func handleDownload(w http.ResponseWriter, r *http.Request, defaultOutputDir string, service core.DownloadService) {
+	// GET request to query status
+	if r.Method == http.MethodGet {
+		handleDownloadGet(w, r, service)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Load settings once for use throughout the function
+	settings, err := config.LoadSettings()
+	if err != nil {
+		// Fallback to defaults if loading fails (though LoadSettings handles missing file)
+		settings = config.DefaultSettings()
+	}
+
+	req, err := parseDownloadRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := validateDownloadRequest(req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	utils.Debug("Received download request: URL=%s, Path=%s", utils.SanitizeURL(req.URL), req.Path)
+
+	if service == nil {
+		http.Error(w, "Service unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	outPath, err := resolveDownloadPath(settings.General.DefaultDownloadDir, defaultOutputDir, req)
+	if err != nil {
+		// Use Forbidden for path traversal attempts as per original behavior
+		statusCode := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "invalid path") {
+			statusCode = http.StatusForbidden
+		}
+		http.Error(w, err.Error(), statusCode)
+		return
+	}
+
+	urlForAdd := req.URL
+	mirrorsForAdd := req.Mirrors
+	if len(mirrorsForAdd) == 0 && strings.Contains(req.URL, ",") {
+		urlForAdd, mirrorsForAdd = ParseURLArg(req.URL)
+	}
+
+	isDuplicate, isActive := checkDownloadDuplicate(urlForAdd)
 
 	utils.Debug("Download request: URL=%s, SkipApproval=%v, isDuplicate=%v, isActive=%v", utils.SanitizeURL(urlForAdd), req.SkipApproval, isDuplicate, isActive)
 
@@ -755,54 +841,8 @@ func handleDownload(w http.ResponseWriter, r *http.Request, defaultOutputDir str
 		// Trust extension -> Skip all prompting logic, proceed to download
 		utils.Debug("Extension request: skipping all prompts, proceeding with download")
 	} else {
-		// Logic for prompting:
-		// 1. If ExtensionPrompt is enabled
-		// 2. OR if WarnOnDuplicate is enabled AND it is a duplicate
-		shouldPrompt := settings.General.ExtensionPrompt || (settings.General.WarnOnDuplicate && isDuplicate)
-
-		// Only prompt if we have a UI running (serverProgram != nil)
-		if shouldPrompt {
-			if serverProgram != nil {
-				utils.Debug("Requesting TUI confirmation for: %s (Duplicate: %v)", utils.SanitizeURL(req.URL), isDuplicate)
-
-				// Send request to TUI
-				if err := service.Publish(events.DownloadRequestMsg{
-					ID:       downloadID,
-					URL:      urlForAdd,
-					Filename: req.Filename,
-					Path:     outPath, // Use the path we resolved (default or requested)
-					Mirrors:  mirrorsForAdd,
-					Headers:  req.Headers,
-				}); err != nil {
-					http.Error(w, "Failed to notify TUI: "+err.Error(), http.StatusInternalServerError)
-					return
-				}
-
-				w.Header().Set("Content-Type", "application/json")
-				// Return 202 Accepted to indicate it's pending approval
-				w.WriteHeader(http.StatusAccepted)
-				if err := json.NewEncoder(w).Encode(map[string]string{
-					"status":  "pending_approval",
-					"message": "Download request sent to TUI for confirmation",
-					"id":      downloadID, // ID might change if user modifies it, but useful for tracking
-				}); err != nil {
-					utils.Debug("Failed to encode response: %v", err)
-				}
-				return
-			} else {
-				// Headless mode check
-				if settings.General.ExtensionPrompt || (settings.General.WarnOnDuplicate && isDuplicate) {
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusConflict)
-					if err := json.NewEncoder(w).Encode(map[string]string{
-						"status":  "error",
-						"message": "Download rejected: Duplicate download or approval required (Headless mode)",
-					}); err != nil {
-						utils.Debug("Failed to encode response: %v", err)
-					}
-					return
-				}
-			}
+		if handleExtensionPrompt(w, req, urlForAdd, mirrorsForAdd, outPath, isDuplicate, service, settings) {
+			return
 		}
 	}
 
