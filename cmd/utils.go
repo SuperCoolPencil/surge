@@ -155,7 +155,7 @@ func resolveDownloadID(partialID string) (string, error) {
 	}
 
 	// 2. Get all downloads from database
-	downloads, err := state.ListAllDownloads()
+	downloads, err := state.ListAllDownloads(0, -1)
 	if err == nil {
 		for _, d := range downloads {
 			candidates = append(candidates, d.ID)
