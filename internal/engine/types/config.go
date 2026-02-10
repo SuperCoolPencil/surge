@@ -79,6 +79,20 @@ type RuntimeConfig struct {
 	SpeedEmaAlpha         float64
 }
 
+// DefaultRuntimeConfig returns a default configuration
+func DefaultRuntimeConfig() *RuntimeConfig {
+	return &RuntimeConfig{
+		MaxConnectionsPerHost: PerHostMax,
+		MinChunkSize:          MinChunk,
+		WorkerBufferSize:      WorkerBuffer,
+		MaxTaskRetries:        MaxTaskRetries,
+		SlowWorkerThreshold:   SlowWorkerThreshold,
+		SlowWorkerGracePeriod: SlowWorkerGrace,
+		StallTimeout:          StallTimeout,
+		SpeedEmaAlpha:         SpeedEMAAlpha,
+	}
+}
+
 // GetUserAgent returns the configured user agent or the default
 func (r *RuntimeConfig) GetUserAgent() string {
 	if r == nil || r.UserAgent == "" {
