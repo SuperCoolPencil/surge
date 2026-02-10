@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -37,6 +38,18 @@ func ProbeServer(ctx context.Context, rawurl string, filenameHint string, header
 	// Create a client that preserves headers on redirects (for authenticated downloads)
 	client := &http.Client{
 		Timeout: types.ProbeTimeout,
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: utils.SafeDialContext(&net.Dialer{
+				Timeout:   types.DialTimeout,
+				KeepAlive: types.KeepAliveDuration,
+			}),
+			MaxIdleConns:          types.DefaultMaxIdleConns,
+			IdleConnTimeout:       types.DefaultIdleConnTimeout,
+			TLSHandshakeTimeout:   types.DefaultTLSHandshakeTimeout,
+			ResponseHeaderTimeout: types.DefaultResponseHeaderTimeout,
+			ExpectContinueTimeout: types.DefaultExpectContinueTimeout,
+		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return fmt.Errorf("stopped after 10 redirects")
