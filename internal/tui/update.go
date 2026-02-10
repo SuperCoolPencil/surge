@@ -173,7 +173,7 @@ func (m RootModel) startDownload(url string, mirrors []string, headers map[strin
 	m.activeTab = TabQueued
 	m.UpdateListItems()
 
-	utils.Debug("Added to Queue (via Service): %s -> %s", url, finalFilename)
+	utils.Debug("Added to Queue (via Service): %s -> %s", utils.SanitizeURL(url), finalFilename)
 
 	return m, nil
 }
@@ -203,7 +203,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		duplicate := m.checkForDuplicate(msg.URL)
 
 		if duplicate != nil && m.Settings.General.WarnOnDuplicate {
-			utils.Debug("Duplicate download detected in TUI: %s", msg.URL)
+			utils.Debug("Duplicate download detected in TUI: %s", utils.SanitizeURL(msg.URL))
 			m.pendingURL = msg.URL
 			m.pendingMirrors = msg.Mirrors
 			m.pendingHeaders = msg.Headers
@@ -980,7 +980,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if key.Matches(msg, m.keys.Extension.Yes) {
 				// Confirmed - proceed to add (checking for duplicates first)
 				if d := m.checkForDuplicate(m.pendingURL); d != nil {
-					utils.Debug("Duplicate download detected after confirmation: %s", m.pendingURL)
+					utils.Debug("Duplicate download detected after confirmation: %s", utils.SanitizeURL(m.pendingURL))
 					m.duplicateInfo = d.Filename
 					m.state = DuplicateWarningState
 					return m, nil

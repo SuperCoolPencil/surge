@@ -13,7 +13,6 @@ import (
 
 var (
 	debugFile *os.File
-	debugOnce sync.Once
 	logsDir   string
 	mu        sync.RWMutex
 )
@@ -22,7 +21,15 @@ var (
 func ConfigureDebug(dir string) {
 	mu.Lock()
 	defer mu.Unlock()
-	logsDir = dir
+
+	// If directory changed, close old file and reset
+	if logsDir != dir {
+		logsDir = dir
+		if debugFile != nil {
+			_ = debugFile.Close()
+			debugFile = nil
+		}
+	}
 }
 
 // Debug writes a message to debug.log file in the configured directory
@@ -30,8 +37,10 @@ func Debug(format string, args ...any) {
 	// add timestamp to each debug message
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 
+	// Read lock to get dir and check if file exists
 	mu.RLock()
 	dir := logsDir
+	file := debugFile
 	mu.RUnlock()
 
 	// If no logs directory is configured, do nothing (or could log to stderr)
@@ -39,13 +48,22 @@ func Debug(format string, args ...any) {
 		return
 	}
 
-	debugOnce.Do(func() {
-		_ = os.MkdirAll(dir, 0o755)
-		debugFile, _ = os.Create(filepath.Join(dir, fmt.Sprintf("debug-%s.log", time.Now().Format("20060102-150405"))))
-	})
+	// Double check locking (upgrade to write lock if file needs creation)
+	if file == nil {
+		mu.Lock()
+		// Re-check inside lock
+		if debugFile == nil {
+			_ = os.MkdirAll(dir, 0o755)
+			// Use consistent timestamp format for filename
+			filename := fmt.Sprintf("debug-%s.log", time.Now().Format("20060102-150405"))
+			debugFile, _ = os.Create(filepath.Join(dir, filename))
+		}
+		file = debugFile
+		mu.Unlock()
+	}
 
-	if debugFile != nil {
-		_, _ = fmt.Fprintf(debugFile, "[%s] %s\n", timestamp, fmt.Sprintf(format, args...))
+	if file != nil {
+		_, _ = fmt.Fprintf(file, "[%s] %s\n", timestamp, fmt.Sprintf(format, args...))
 	}
 }
 

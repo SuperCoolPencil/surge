@@ -81,7 +81,7 @@ func uniqueFilePath(path string) string {
 // TUIDownload is the main entry point for TUI downloads
 func TUIDownload(ctx context.Context, cfg *types.DownloadConfig) error {
 	// Probe server once to get all metadata
-	utils.Debug("TUIDownload: Probing server... %s", cfg.URL)
+	utils.Debug("TUIDownload: Probing server... %s", utils.SanitizeURL(cfg.URL))
 	probe, err := engine.ProbeServer(ctx, cfg.URL, cfg.Filename, cfg.Headers)
 	if err != nil {
 		utils.Debug("TUIDownload: Probe failed: %v\n", err)
@@ -92,7 +92,7 @@ func TUIDownload(ctx context.Context, cfg *types.DownloadConfig) error {
 	// Start download timer (exclude probing time)
 	start := time.Now()
 	defer func() {
-		utils.Debug("Download %s completed in %v", cfg.URL, time.Since(start))
+		utils.Debug("Download %s completed in %v", utils.SanitizeURL(cfg.URL), time.Since(start))
 	}()
 
 	// Construct proper output path
@@ -187,7 +187,7 @@ func TUIDownload(ctx context.Context, cfg *types.DownloadConfig) error {
 
 			// Log errors
 			for u, e := range errs {
-				utils.Debug("Mirror probe failed for %s: %v", u, e)
+				utils.Debug("Mirror probe failed for %s: %v", utils.SanitizeURL(u), e)
 			}
 
 			// Filter valid mirrors (excluding primary as it is handled separately)

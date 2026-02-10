@@ -29,7 +29,7 @@ type ProbeResult struct {
 // ProbeServer sends GET with Range: bytes=0-0 to determine server capabilities
 // headers is optional - pass nil for non-authenticated probes
 func ProbeServer(ctx context.Context, rawurl string, filenameHint string, headers map[string]string) (*ProbeResult, error) {
-	utils.Debug("Probing server: %s", rawurl)
+	utils.Debug("Probing server: %s", utils.SanitizeURL(rawurl))
 
 	var resp *http.Response
 	var err error

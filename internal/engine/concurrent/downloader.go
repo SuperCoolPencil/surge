@@ -184,7 +184,7 @@ func (d *ConcurrentDownloader) newConcurrentClient(numConns int) *http.Client {
 			proxyFunc = http.ProxyURL(parsedURL)
 		} else {
 			// Fallback or log error? For now fallback to environment
-			utils.Debug("Invalid proxy URL %s: %v", d.Runtime.ProxyURL, err)
+			utils.Debug("Invalid proxy URL %s: %v", utils.SanitizeURL(d.Runtime.ProxyURL), err)
 			proxyFunc = http.ProxyFromEnvironment
 		}
 	} else {
@@ -243,7 +243,7 @@ func (d *ConcurrentDownloader) newConcurrentClient(numConns int) *http.Client {
 // Download downloads a file using multiple concurrent connections
 // Uses pre-probed metadata (file size already known)
 func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, candidateMirrors []string, activeMirrors []string, destPath string, fileSize int64, verbose bool) error {
-	utils.Debug("ConcurrentDownloader.Download: %s -> %s (size: %d, mirrors: %d)", rawurl, destPath, fileSize, len(activeMirrors))
+	utils.Debug("ConcurrentDownloader.Download: %s -> %s (size: %d, mirrors: %d)", utils.SanitizeURL(rawurl), destPath, fileSize, len(activeMirrors))
 
 	// Store URL and path for pause/resume (final path without .surge)
 	d.URL = rawurl

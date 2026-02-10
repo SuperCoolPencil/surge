@@ -12,23 +12,29 @@ import (
 )
 
 func TestDebug_CreatesLogFile(t *testing.T) {
-	// Note: Debug uses sync.Once, so we can only test it once per test run
-	// This test verifies that the debug function creates a log file
-
-	// Ensure logs directory exists
-	logsDir := config.GetLogsDir()
-	if err := os.MkdirAll(logsDir, 0o755); err != nil {
-		t.Fatalf("Failed to create logs directory: %v", err)
+	// Use a temporary directory for isolation
+	tempDir, err := os.MkdirTemp("", "surge-debug-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
 	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	// Save original config to restore later
+	originalDir := config.GetLogsDir()
+	defer ConfigureDebug(originalDir)
+
+	// Configure debug to use temp dir
+	ConfigureDebug(tempDir)
 
 	// Call Debug
 	Debug("Test message from unit test")
 
-	// Wait a moment for file to be created
-	time.Sleep(100 * time.Millisecond)
+	// Wait a moment for file to be created (filesystem sync)
+	// Although Debug uses buffered IO via os.File, it should be visible quickly
+	time.Sleep(10 * time.Millisecond)
 
 	// Check if any debug log file was created
-	entries, err := os.ReadDir(logsDir)
+	entries, err := os.ReadDir(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to read logs directory: %v", err)
 	}
@@ -42,7 +48,7 @@ func TestDebug_CreatesLogFile(t *testing.T) {
 	}
 
 	if !found {
-		t.Log("Note: Debug log file may not be created on first run due to sync.Once behavior")
+		t.Errorf("Debug log file was not created in %s", tempDir)
 	}
 }
 
