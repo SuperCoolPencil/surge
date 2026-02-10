@@ -62,18 +62,52 @@ func uniqueFilePath(path string) string {
 		}
 	}
 
-	for i := 0; i < 100; i++ { // Try next 100 numbers
+	// checkCandidate returns true if the file or its incomplete version exists
+	checkCandidate := func(i int) bool {
 		candidate := filepath.Join(dir, fmt.Sprintf("%s(%d)%s", base, counter+i, ext))
-		if _, err := os.Stat(candidate); os.IsNotExist(err) {
-			if _, err := os.Stat(candidate + types.IncompleteSuffix); os.IsNotExist(err) {
-				return candidate
-			}
+		if _, err := os.Stat(candidate); !os.IsNotExist(err) {
+			return true
+		}
+		if _, err := os.Stat(candidate + types.IncompleteSuffix); !os.IsNotExist(err) {
+			return true
+		}
+		return false
+	}
+
+	// If the immediate next candidate is available, use it (optimization for common case)
+	// Note: counter+0 is the first candidate we want to check (e.g. file(1) or file(2))
+	if !checkCandidate(0) {
+		return filepath.Join(dir, fmt.Sprintf("%s(%d)%s", base, counter, ext))
+	}
+
+	// Exponential probe to find a range [low, high] where low is taken and high is free
+	low, high := 0, 1
+	for checkCandidate(high) {
+		low = high
+		high *= 2
+		if high > 20000 { // Sanity limit to prevent infinite loop in pathological cases
+			// If we have > 20000 duplicates, we fallback to just returning the high candidate
+			// and letting the OS handle the error or overwrite if the user forces it (though we return unique path usually)
+			// Ideally we would switch to a random suffix or linear scan here, but 20000 is plenty.
+			break
 		}
 	}
 
-	// Fallback: just append a large random number or give up (original behavior essentially gave up or made ugly names)
-	// Here we fallback to original behavior of appending if the clean one failed 100 times
-	return path
+	// Binary search in (low, high] to find the first free slot
+	// We want the smallest k in (low, high] such that checkCandidate(k) is false
+	// Invariant: checkCandidate(low) is true (or assumed true for 0)
+	// Invariant: checkCandidate(high) is false (or we hit limit)
+
+	for low+1 < high {
+		mid := low + (high-low)/2
+		if checkCandidate(mid) {
+			low = mid
+		} else {
+			high = mid
+		}
+	}
+
+	return filepath.Join(dir, fmt.Sprintf("%s(%d)%s", base, counter+high, ext))
 }
 
 // TUIDownload is the main entry point for TUI downloads

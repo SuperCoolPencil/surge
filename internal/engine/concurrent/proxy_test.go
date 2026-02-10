@@ -65,22 +65,23 @@ func TestConcurrentDownloader_ProxySupport(t *testing.T) {
 		ProxyURL:              proxyServer.URL,
 	}
 
-	// Create temp dir for output
-	tmpDir, cleanup, err := testutil.TempDir("proxy-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	// Use initTestState to ensure DB is configured properly
+	// The original test used TempDir directly but didn't initialize state DB which
+	// concurrent downloader might need (even if just to check state).
+	// However, initTestState returns tmpDir and cleanup func.
+	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
 	destPath := tmpDir + "/proxy-download.bin"
+	state := types.NewProgressState("proxy-id", 1024)
 
-	downloader := NewConcurrentDownloader("test-id", nil, nil, runtime)
+	downloader := NewConcurrentDownloader("proxy-id", nil, state, runtime)
 
 	// 4. Execute Download
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err = downloader.Download(ctx, targetServer.URL(), nil, nil, destPath, 1024, false)
+	err := downloader.Download(ctx, targetServer.URL(), nil, nil, destPath, 1024, false)
 	if err != nil {
 		t.Fatalf("Download failed: %v", err)
 	}
@@ -109,11 +110,13 @@ func TestConcurrentDownloader_InvalidProxy(t *testing.T) {
 		ProxyURL:              "://invalid-url",
 	}
 
-	tmpDir, cleanup, _ := testutil.TempDir("proxy-fail-test")
+	// Use initTestState here too for consistency
+	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 	destPath := tmpDir + "/output.bin"
+	state := types.NewProgressState("proxy-fail-id", 1024)
 
-	downloader := NewConcurrentDownloader("test-id-2", nil, nil, runtime)
+	downloader := NewConcurrentDownloader("proxy-fail-id", nil, state, runtime)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

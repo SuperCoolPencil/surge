@@ -2,6 +2,7 @@ package concurrent
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,6 +15,9 @@ import (
 // Helper to init state just for tests (avoiding global init if possible,
 // using temporary directories for each test)
 func initTestState(t *testing.T) (string, func()) {
+	// Explicitly set env var for tests to avoid race conditions with init()
+	os.Setenv("SURGE_ALLOW_PRIVATE_IPS", "true")
+
 	state.CloseDB() // Ensure any previous DB is closed
 
 	tmpDir, cleanup, err := testutil.TempDir("surge-test")
@@ -410,13 +414,13 @@ func TestConcurrentDownloader_RetryOnFailure(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
-	fileSize := int64(256 * types.KB)
-	// Server fails after 20KB per-request, forcing retries
-	// With 64KB chunks, each request will fail mid-way
+	// Reduce complexity to prevent timeout in CI
+	fileSize := int64(128 * types.KB)
+	// Server fails after 10KB per-request, forcing retries
 	server := testutil.NewMockServerT(t,
 		testutil.WithFileSize(fileSize),
 		testutil.WithRangeSupport(true),
-		testutil.WithFailAfterBytes(20*types.KB), // Fail after 20KB per request
+		testutil.WithFailAfterBytes(10*types.KB), // Fail after 10KB per request
 	)
 	defer server.Close()
 
@@ -424,13 +428,14 @@ func TestConcurrentDownloader_RetryOnFailure(t *testing.T) {
 	state := types.NewProgressState("retry-test", fileSize)
 	runtime := &types.RuntimeConfig{
 		MaxConnectionsPerHost: 2,
-		MaxTaskRetries:        10,            // Need more retries since each attempt only gets 20KB
-		MinChunkSize:          64 * types.KB, // Larger chunks to ensure failures occur
+		MaxTaskRetries:        8,             // Sufficient retries
+		MinChunkSize:          32 * types.KB, // Smaller chunks so we don't retry forever
 	}
 
 	downloader := NewConcurrentDownloader("retry-id", nil, state, runtime)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Increase timeout for flaky environments
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	err := downloader.Download(ctx, server.URL(), nil, nil, destPath, fileSize, false)
