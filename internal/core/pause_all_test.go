@@ -27,7 +27,7 @@ func TestLocalDownloadService_PauseAll(t *testing.T) {
 	// Create a pool with 2 workers so we can test active + queued
 	pool := download.NewWorkerPool(progressCh, 2)
 	service := NewLocalDownloadService(pool)
-	defer service.Shutdown()
+	defer func() { _ = service.Shutdown() }()
 
 	// Test 1: No downloads
 	if err := service.PauseAll(); err != nil {
