@@ -128,7 +128,7 @@ func (d *SingleDownloader) Download(ctx context.Context, rawurl, destPath string
 	// Rename .surge file to final destination
 	if err := os.Rename(workingPath, destPath); err != nil {
 		// Fallback: copy if rename fails (cross-device)
-		if copyErr := copyFile(workingPath, destPath); copyErr != nil {
+		if copyErr := utils.CopyFile(workingPath, destPath); copyErr != nil {
 			return fmt.Errorf("failed to finalize file: %w", copyErr)
 		}
 		_ = os.Remove(workingPath)
@@ -148,32 +148,4 @@ func (d *SingleDownloader) Download(ctx context.Context, rawurl, destPath string
 	}
 
 	return nil
-}
-
-// copyFile copies a file from src to dst (fallback when rename fails)
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := in.Close(); err != nil {
-			utils.Debug("Error closing input file: %v", err)
-		}
-	}()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := out.Close(); err != nil {
-			utils.Debug("Error closing output file: %v", err)
-		}
-	}()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Sync()
 }
