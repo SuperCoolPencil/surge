@@ -164,6 +164,9 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 		}
 
 		if lastErr != nil {
+			if IsFatal(lastErr) {
+				return lastErr
+			}
 			// Log failed task but continue with next task
 			// If we modified StopAt we should probably reset it or push the remaining part?
 			// TODO: Could optimize by pushing only remaining part if we track that.
@@ -220,6 +223,9 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 			return fmt.Errorf("server indicated success (200) but ignored range request (expected 206)")
 		}
 	} else if resp.StatusCode != http.StatusPartialContent {
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusForbidden {
+			return NewFatalError(fmt.Errorf("server returned %d", resp.StatusCode))
+		}
 		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
 
