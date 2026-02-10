@@ -25,7 +25,9 @@ func readActivePort() int {
 		return 0
 	}
 	var port int
-	_, _ = fmt.Sscanf(string(data), "%d", &port)
+	if _, err := fmt.Sscanf(string(data), "%d", &port); err != nil {
+		return 0
+	}
 	return port
 }
 
