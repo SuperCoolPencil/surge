@@ -69,8 +69,8 @@ func openFile(path string) error {
 }
 
 // readURLsFromFile reads URLs from a file, one per line (skips empty lines, comments, and duplicates)
-func readURLsFromFile(filepath string) ([]string, error) {
-	file, err := os.Open(filepath)
+func readURLsFromFile(path string) ([]string, error) {
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}

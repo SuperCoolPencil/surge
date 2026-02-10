@@ -65,3 +65,38 @@ func TestReadActivePort(t *testing.T) {
 		t.Errorf("Case 4: Expected 0 when port file is empty, got %d", port)
 	}
 }
+
+func TestReadURLsFromFile(t *testing.T) {
+	// Create a temporary file
+	tmpfile, err := os.CreateTemp("", "urls.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name()) // clean up
+
+	// Write some URLs
+	content := "http://example.com\n# comment\n\nhttp://example.org"
+	if _, err := tmpfile.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmpfile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Call readURLsFromFile
+	urls, err := readURLsFromFile(tmpfile.Name())
+	if err != nil {
+		t.Errorf("readURLsFromFile returned error: %v", err)
+	}
+
+	// Check results
+	expected := []string{"http://example.com", "http://example.org"}
+	if len(urls) != len(expected) {
+		t.Errorf("Expected %d URLs, got %d", len(expected), len(urls))
+	}
+	for i, url := range urls {
+		if url != expected[i] {
+			t.Errorf("Expected URL %d to be %s, got %s", i, expected[i], url)
+		}
+	}
+}
