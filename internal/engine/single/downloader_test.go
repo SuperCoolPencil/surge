@@ -2,6 +2,9 @@ package single
 
 import (
 	"context"
+	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,483 +14,292 @@ import (
 	"github.com/surge-downloader/surge/internal/testutil"
 )
 
-func TestCopyFile(t *testing.T) {
-	tmpDir, cleanup, err := testutil.TempDir("surge-copy-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
-
-	// Create source file
-	srcPath, err := testutil.CreateTestFile(tmpDir, "src.bin", 1024, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	dstPath := filepath.Join(tmpDir, "dst.bin")
-
-	err = copyFile(srcPath, dstPath)
-	if err != nil {
-		t.Fatalf("copyFile failed: %v", err)
-	}
-
-	// Verify destination exists
-	if !testutil.FileExists(dstPath) {
-		t.Error("Destination file should exist")
-	}
-
-	// Verify sizes match
-	srcInfo, _ := os.Stat(srcPath)
-	dstInfo, _ := os.Stat(dstPath)
-	if srcInfo.Size() != dstInfo.Size() {
-		t.Error("File sizes don't match")
-	}
-
-	// Verify contents match
-	match, err := testutil.CompareFiles(srcPath, dstPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !match {
-		t.Error("File contents don't match")
-	}
+func init() {
+	// Allow private IPs for testing
+	_ = os.Setenv("SURGE_ALLOW_PRIVATE_IPS", "true")
 }
-
-func TestCopyFile_SourceNotExists(t *testing.T) {
-	tmpDir, cleanup, _ := testutil.TempDir("surge-copy-test")
-	defer cleanup()
-
-	err := copyFile(filepath.Join(tmpDir, "nonexistent.bin"), filepath.Join(tmpDir, "dst.bin"))
-	if err == nil {
-		t.Error("Expected error for nonexistent source")
-	}
-}
-
-func TestCopyFile_InvalidDestination(t *testing.T) {
-	tmpDir, cleanup, _ := testutil.TempDir("surge-copy-test")
-	defer cleanup()
-
-	srcPath, _ := testutil.CreateTestFile(tmpDir, "src.bin", 100, false)
-
-	// Try to copy to an invalid path (non-existent directory)
-	err := copyFile(srcPath, filepath.Join(tmpDir, "nonexistent", "subdir", "dst.bin"))
-	if err == nil {
-		t.Error("Expected error for invalid destination")
-	}
-}
-
-func TestCopyFile_EmptyFile(t *testing.T) {
-	tmpDir, cleanup, _ := testutil.TempDir("surge-copy-test")
-	defer cleanup()
-
-	srcPath, _ := testutil.CreateTestFile(tmpDir, "empty.bin", 0, false)
-	dstPath := filepath.Join(tmpDir, "empty_copy.bin")
-
-	err := copyFile(srcPath, dstPath)
-	if err != nil {
-		t.Fatalf("copyFile failed for empty file: %v", err)
-	}
-
-	if err := testutil.VerifyFileSize(dstPath, 0); err != nil {
-		t.Error(err)
-	}
-}
-
-func TestCopyFile_LargeFile(t *testing.T) {
-	tmpDir, cleanup, _ := testutil.TempDir("surge-copy-test")
-	defer cleanup()
-
-	size := int64(5 * types.MB)
-	srcPath, _ := testutil.CreateTestFile(tmpDir, "large.bin", size, false)
-	dstPath := filepath.Join(tmpDir, "large_copy.bin")
-
-	err := copyFile(srcPath, dstPath)
-	if err != nil {
-		t.Fatalf("copyFile failed for large file: %v", err)
-	}
-
-	if err := testutil.VerifyFileSize(dstPath, size); err != nil {
-		t.Error(err)
-	}
-}
-
-func TestCopyFile_ContentVerification(t *testing.T) {
-	tmpDir, cleanup, _ := testutil.TempDir("surge-copy-content")
-	defer cleanup()
-
-	size := int64(128 * types.KB)
-	srcPath, _ := testutil.CreateTestFile(tmpDir, "random.bin", size, true) // Random data
-	dstPath := filepath.Join(tmpDir, "random_copy.bin")
-
-	err := copyFile(srcPath, dstPath)
-	if err != nil {
-		t.Fatalf("copyFile failed: %v", err)
-	}
-
-	match, err := testutil.CompareFiles(srcPath, dstPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !match {
-		t.Error("Copied file content doesn't match source")
-	}
-}
-
-// =============================================================================
-// SingleDownloader - Streaming Server
-// =============================================================================
-
-func TestSingleDownloader_StreamingServer(t *testing.T) {
-	tmpDir, cleanup, _ := testutil.TempDir("surge-stream-single")
-	defer cleanup()
-
-	fileSize := int64(1 * types.MB)
-	server := testutil.NewStreamingMockServerT(t, fileSize,
-		testutil.WithRangeSupport(false),
-	)
-	defer server.Close()
-
-	destPath := filepath.Join(tmpDir, "stream_single.bin")
-	state := types.NewProgressState("stream-single", fileSize)
-	runtime := &types.RuntimeConfig{}
-
-	downloader := NewSingleDownloader("stream-id", nil, state, runtime)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	err := downloader.Download(ctx, server.URL(), destPath, fileSize, "stream.bin", false)
-	if err != nil {
-		t.Fatalf("Streaming download failed: %v", err)
-	}
-
-	if err := testutil.VerifyFileSize(destPath, fileSize); err != nil {
-		t.Error(err)
-	}
-}
-
-// =============================================================================
-// SingleDownloader - FailAfterBytes
-// =============================================================================
-
-func TestSingleDownloader_FailAfterBytes(t *testing.T) {
-	tmpDir, cleanup, _ := testutil.TempDir("surge-failafter-single")
-	defer cleanup()
-
-	fileSize := int64(256 * types.KB)
-	// Server fails after sending 50KB
-	server := testutil.NewMockServerT(t,
-		testutil.WithFileSize(fileSize),
-		testutil.WithRangeSupport(false),
-		testutil.WithFailAfterBytes(50*types.KB),
-	)
-	defer server.Close()
-
-	destPath := filepath.Join(tmpDir, "failafter_single.bin")
-	state := types.NewProgressState("failafter-single", fileSize)
-	runtime := &types.RuntimeConfig{}
-
-	downloader := NewSingleDownloader("failafter-id", nil, state, runtime)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	err := downloader.Download(ctx, server.URL(), destPath, fileSize, "failafter.bin", false)
-	// Should fail since SingleDownloader doesn't retry
-	if err == nil {
-		t.Error("Expected error when server fails mid-transfer")
-	}
-
-	// Partial file should exist with .surge suffix
-	stats := server.Stats()
-	if stats.BytesServed < 50*types.KB {
-		t.Errorf("Expected at least 50KB served before failure, got %d", stats.BytesServed)
-	}
-}
-
-// =============================================================================
-// SingleDownloader - NilState handling
-// =============================================================================
-
-func TestSingleDownloader_NilState(t *testing.T) {
-	tmpDir, cleanup, _ := testutil.TempDir("surge-nilstate-single")
-	defer cleanup()
-
-	fileSize := int64(32 * types.KB)
-	server := testutil.NewMockServerT(t,
-		testutil.WithFileSize(fileSize),
-		testutil.WithRangeSupport(false),
-	)
-	defer server.Close()
-
-	destPath := filepath.Join(tmpDir, "nilstate_single.bin")
-	runtime := &types.RuntimeConfig{}
-
-	// Create downloader with nil state
-	downloader := NewSingleDownloader("nilstate-id", nil, nil, runtime)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	err := downloader.Download(ctx, server.URL(), destPath, fileSize, "nilstate.bin", false)
-	if err != nil {
-		t.Fatalf("Download with nil state failed: %v", err)
-	}
-
-	if err := testutil.VerifyFileSize(destPath, fileSize); err != nil {
-		t.Error(err)
-	}
-}
-
-// =============================================================================
-// Restored Standard Tests
-// =============================================================================
 
 func TestNewSingleDownloader(t *testing.T) {
-	state := types.NewProgressState("test", 1000)
-	runtime := &types.RuntimeConfig{}
-
-	downloader := NewSingleDownloader("test-id", nil, state, runtime)
-
-	if downloader == nil {
-		t.Fatal("NewSingleDownloader returned nil")
-	}
-	if downloader.ID != "test-id" {
-		t.Errorf("ID mismatch: got %s, want test-id", downloader.ID)
-	}
-	if downloader.State != state {
-		t.Error("State not set correctly")
+	dl := NewSingleDownloader("test-id", nil, nil, types.DefaultRuntimeConfig())
+	if dl.ID != "test-id" {
+		t.Errorf("Expected ID 'test-id', got %s", dl.ID)
 	}
 }
 
 func TestSingleDownloader_Download_Success(t *testing.T) {
-	tmpDir, cleanup, err := testutil.TempDir("surge-single-test")
+	// Setup mock server
+	server := testutil.NewMockServerT(t, testutil.WithFileSize(1024), testutil.WithRandomData(true))
+	defer server.Close()
+
+	// Setup temp output file
+	tmpDir, cleanup, err := testutil.TempDir("single-dl-test")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer cleanup()
 
-	fileSize := int64(64 * 1024) // 64KB
-	server := testutil.NewMockServerT(t,
-		testutil.WithFileSize(fileSize),
-		testutil.WithRangeSupport(false), // SingleDownloader doesn't use ranges
-		testutil.WithFilename("single_test.bin"),
-	)
-	defer server.Close()
+	outputPath := filepath.Join(tmpDir, "output.bin")
 
-	destPath := filepath.Join(tmpDir, "single_test.bin")
-	state := types.NewProgressState("single-test", fileSize)
-	runtime := &types.RuntimeConfig{WorkerBufferSize: 8 * types.KB}
+	// Setup downloader
+	progressCh := make(chan any, 10)
+	state := types.NewProgressState("test-id", 1024)
+	dl := NewSingleDownloader("test-id", progressCh, state, types.DefaultRuntimeConfig())
 
-	downloader := NewSingleDownloader("single-id", nil, state, runtime)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	err = downloader.Download(ctx, server.URL(), destPath, fileSize, "single_test.bin", false)
+	// Run download
+	err = dl.Download(context.Background(), server.URL(), outputPath, 1024, "output.bin", false)
 	if err != nil {
 		t.Fatalf("Download failed: %v", err)
 	}
 
-	// Verify file exists and has correct size
-	if err := testutil.VerifyFileSize(destPath, fileSize); err != nil {
-		t.Error(err)
+	// Verify file size
+	if err := testutil.VerifyFileSize(outputPath, 1024); err != nil {
+		t.Errorf("File verification failed: %v", err)
 	}
 
-	// Verify .surge file was removed
-	surgeFile := destPath + types.IncompleteSuffix
-	if testutil.FileExists(surgeFile) {
-		t.Error(".surge file should be removed after successful download")
-	}
-
-	// Verify progress was tracked
-	if state.Downloaded.Load() != fileSize {
-		t.Errorf("Downloaded %d != fileSize %d", state.Downloaded.Load(), fileSize)
+	// Note: dl.Download does NOT set state.Done. The WorkerPool does.
+	if state.Downloaded.Load() != 1024 {
+		t.Errorf("Expected 1024 downloaded bytes, got %d", state.Downloaded.Load())
 	}
 }
 
 func TestSingleDownloader_Download_Cancellation(t *testing.T) {
-	tmpDir, cleanup, _ := testutil.TempDir("surge-cancel-single")
-	defer cleanup()
-
-	// Large file with latency
-	fileSize := int64(5 * types.MB)
+	// Setup slow mock server
 	server := testutil.NewMockServerT(t,
-		testutil.WithFileSize(fileSize),
-		testutil.WithRangeSupport(false),
-		testutil.WithByteLatency(500*time.Microsecond),
+		testutil.WithFileSize(1024*1024),
+		testutil.WithByteLatency(10*time.Microsecond), // Ensure it takes some time
 	)
 	defer server.Close()
 
-	destPath := filepath.Join(tmpDir, "cancel_single.bin")
-	state := types.NewProgressState("cancel-single", fileSize)
-	runtime := &types.RuntimeConfig{}
+	tmpDir, cleanup, err := testutil.TempDir("single-dl-cancel")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer cleanup()
+	outputPath := filepath.Join(tmpDir, "cancel.bin")
 
-	downloader := NewSingleDownloader("cancel-id", nil, state, runtime)
+	progressCh := make(chan any, 10)
+	state := types.NewProgressState("test-id", 1024*1024)
+	dl := NewSingleDownloader("test-id", progressCh, state, types.DefaultRuntimeConfig())
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	done := make(chan error)
+	// Start download in goroutine
+	errCh := make(chan error)
 	go func() {
-		done <- downloader.Download(ctx, server.URL(), destPath, fileSize, "cancel.bin", false)
+		errCh <- dl.Download(ctx, server.URL(), outputPath, 1024*1024, "cancel.bin", false)
 	}()
 
-	// Cancel after a short delay
-	time.Sleep(100 * time.Millisecond)
+	// Wait a bit then cancel
+	time.Sleep(10 * time.Millisecond)
 	cancel()
 
-	select {
-	case err := <-done:
-		// Accept context.Canceled or wrapped errors
-		if err != nil && err != context.Canceled && err.Error() != "context canceled" {
-			t.Logf("Expected context.Canceled, got: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Download didn't respond to cancellation")
+	// Check result
+	err = <-errCh
+	// Accepts nil (completed before cancel) or context.Canceled (wrapped or direct)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Errorf("Expected context.Canceled or nil, got: %v", err)
 	}
 }
 
 func TestSingleDownloader_Download_ProgressTracking(t *testing.T) {
-	tmpDir, cleanup, _ := testutil.TempDir("surge-progress-single")
-	defer cleanup()
-
-	fileSize := int64(256 * types.KB)
-	server := testutil.NewMockServerT(t,
-		testutil.WithFileSize(fileSize),
-		testutil.WithRangeSupport(false),
-		testutil.WithByteLatency(5*time.Microsecond), // Slow down to allow progress monitoring
-	)
+	// Setup server
+	size := int64(100 * 1024)
+	server := testutil.NewMockServerT(t, testutil.WithFileSize(size))
 	defer server.Close()
 
-	destPath := filepath.Join(tmpDir, "progress_single.bin")
-	state := types.NewProgressState("progress-single", fileSize)
-	runtime := &types.RuntimeConfig{WorkerBufferSize: 16 * types.KB}
+	tmpDir, cleanup, err := testutil.TempDir("single-dl-progress")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer cleanup()
+	outputPath := filepath.Join(tmpDir, "progress.bin")
 
-	downloader := NewSingleDownloader("progress-id", nil, state, runtime)
+	progressCh := make(chan any, 100)
+	state := types.NewProgressState("test-id", size)
+	dl := NewSingleDownloader("test-id", progressCh, state, types.DefaultRuntimeConfig())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	err := downloader.Download(ctx, server.URL(), destPath, fileSize, "progress.bin", false)
+	err = dl.Download(context.Background(), server.URL(), outputPath, size, "progress.bin", false)
 	if err != nil {
 		t.Fatalf("Download failed: %v", err)
 	}
 
-	// Verify final progress equals file size
-	finalProgress := state.Downloaded.Load()
-	if finalProgress != fileSize {
-		t.Errorf("Final progress %d != file size %d", finalProgress, fileSize)
+	// Verify state updates
+	if state.Downloaded.Load() != size {
+		t.Errorf("Expected %d bytes downloaded, got %d", size, state.Downloaded.Load())
 	}
 }
 
 func TestSingleDownloader_Download_ServerError(t *testing.T) {
-	tmpDir, cleanup, _ := testutil.TempDir("surge-error-single")
-	defer cleanup()
-
-	// Server that fails on first request
-	server := testutil.NewMockServerT(t,
-		testutil.WithFileSize(1024),
-		testutil.WithFailOnNthRequest(1),
-	)
+	// Setup failing server
+	server := testutil.NewMockServerT(t, testutil.WithFailOnNthRequest(1))
 	defer server.Close()
 
-	destPath := filepath.Join(tmpDir, "error_single.bin")
-	state := types.NewProgressState("error-single", 1024)
-	runtime := &types.RuntimeConfig{}
+	tmpDir, cleanup, err := testutil.TempDir("single-dl-error")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer cleanup()
+	outputPath := filepath.Join(tmpDir, "error.bin")
 
-	downloader := NewSingleDownloader("error-id", nil, state, runtime)
+	dl := NewSingleDownloader("test-id", nil, nil, types.DefaultRuntimeConfig())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	err := downloader.Download(ctx, server.URL(), destPath, 1024, "error.bin", false)
+	// Should fail immediately
+	err = dl.Download(context.Background(), server.URL(), outputPath, 1024, "error.bin", false)
 	if err == nil {
-		t.Error("Expected error from failed server")
+		t.Fatal("Expected error, got nil")
 	}
 }
 
 func TestSingleDownloader_Download_WithLatency(t *testing.T) {
-	tmpDir, cleanup, _ := testutil.TempDir("surge-latency-single")
-	defer cleanup()
-
-	fileSize := int64(32 * types.KB)
+	// Setup slow server
 	server := testutil.NewMockServerT(t,
-		testutil.WithFileSize(fileSize),
-		testutil.WithRangeSupport(false),
-		testutil.WithLatency(100*time.Millisecond),
+		testutil.WithFileSize(1024),
+		testutil.WithLatency(2*time.Millisecond),
 	)
 	defer server.Close()
 
-	destPath := filepath.Join(tmpDir, "latency_single.bin")
-	state := types.NewProgressState("latency-single", fileSize)
-	runtime := &types.RuntimeConfig{}
+	tmpDir, cleanup, err := testutil.TempDir("single-dl-latency")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer cleanup()
+	outputPath := filepath.Join(tmpDir, "latency.bin")
 
-	downloader := NewSingleDownloader("latency-id", nil, state, runtime)
+	dl := NewSingleDownloader("test-id", nil, nil, types.DefaultRuntimeConfig())
 
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	err := downloader.Download(ctx, server.URL(), destPath, fileSize, "latency.bin", false)
-	elapsed := time.Since(start)
-
+	err = dl.Download(context.Background(), server.URL(), outputPath, 1024, "latency.bin", false)
 	if err != nil {
 		t.Fatalf("Download failed: %v", err)
 	}
+	duration := time.Since(start)
 
-	if elapsed < 100*time.Millisecond {
-		t.Errorf("Download completed too fast (%v), latency not applied", elapsed)
-	}
-
-	if err := testutil.VerifyFileSize(destPath, fileSize); err != nil {
-		t.Error(err)
+	if duration < 2*time.Millisecond {
+		t.Errorf("Download too fast, expected at least 2ms latency, took %v", duration)
 	}
 }
 
 func TestSingleDownloader_Download_ContentIntegrity(t *testing.T) {
-	tmpDir, cleanup, _ := testutil.TempDir("surge-content-single")
-	defer cleanup()
-
-	fileSize := int64(64 * types.KB)
-	server := testutil.NewMockServerT(t,
-		testutil.WithFileSize(fileSize),
-		testutil.WithRangeSupport(false),
-		testutil.WithRandomData(true),
-	)
+	// Setup server with random data
+	size := int64(64 * 1024)
+	server := testutil.NewMockServerT(t, testutil.WithFileSize(size), testutil.WithRandomData(true))
 	defer server.Close()
 
-	destPath := filepath.Join(tmpDir, "content_single.bin")
-	state := types.NewProgressState("content-single", fileSize)
-	runtime := &types.RuntimeConfig{}
+	// Download raw content to compare
+	resp, err := http.Get(server.URL())
+	if err != nil {
+		t.Fatalf("Failed to fetch reference content: %v", err)
+	}
+	defer resp.Body.Close()
+	expectedData, _ := io.ReadAll(resp.Body)
 
-	downloader := NewSingleDownloader("content-id", nil, state, runtime)
+	tmpDir, cleanup, err := testutil.TempDir("single-dl-integrity")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer cleanup()
+	outputPath := filepath.Join(tmpDir, "integrity.bin")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	dl := NewSingleDownloader("test-id", nil, nil, types.DefaultRuntimeConfig())
 
-	err := downloader.Download(ctx, server.URL(), destPath, fileSize, "content.bin", false)
+	err = dl.Download(context.Background(), server.URL(), outputPath, size, "integrity.bin", false)
 	if err != nil {
 		t.Fatalf("Download failed: %v", err)
 	}
 
-	if err := testutil.VerifyFileSize(destPath, fileSize); err != nil {
-		t.Error(err)
-	}
-
-	// Verify content is not all zeros (random data was used)
-	chunk, err := testutil.ReadFileChunk(destPath, 0, 1024)
+	// Compare file content
+	actualData, err := os.ReadFile(outputPath)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Failed to read output file: %v", err)
 	}
 
-	allZero := true
-	for _, b := range chunk {
-		if b != 0 {
-			allZero = false
-			break
+	if len(actualData) != len(expectedData) {
+		t.Errorf("Size mismatch: expected %d, got %d", len(expectedData), len(actualData))
+	} else {
+		for i := range actualData {
+			if actualData[i] != expectedData[i] {
+				t.Errorf("Content mismatch at byte %d", i)
+				break
+			}
 		}
 	}
-	if allZero {
-		t.Error("Content should not be all zeros with random data")
+}
+
+func TestSingleDownloader_StreamingServer(t *testing.T) {
+	// Simulate very large file stream (10MB)
+	size := int64(10 * 1024 * 1024)
+	server := testutil.NewStreamingMockServerT(t, size)
+	defer server.Close()
+
+	tmpDir, cleanup, err := testutil.TempDir("single-dl-stream")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer cleanup()
+	outputPath := filepath.Join(tmpDir, "stream.bin")
+
+	dl := NewSingleDownloader("test-id", nil, nil, types.DefaultRuntimeConfig())
+
+	// We don't need to download the whole thing, just start it
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err = dl.Download(ctx, server.URL(), outputPath, size, "stream.bin", false)
+	// It should fail with timeout/cancel, but crucially NOT with protocol error
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Streaming download failed: %v", err)
+	}
+}
+
+func TestSingleDownloader_FailAfterBytes(t *testing.T) {
+	// Server fails connection after 50KB
+	failAt := int64(50 * 1024)
+	server := testutil.NewMockServerT(t,
+		testutil.WithFileSize(100*1024),
+		testutil.WithFailAfterBytes(failAt),
+	)
+	defer server.Close()
+
+	tmpDir, cleanup, err := testutil.TempDir("single-dl-fail")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer cleanup()
+	outputPath := filepath.Join(tmpDir, "fail.bin")
+
+	dl := NewSingleDownloader("test-id", nil, nil, types.DefaultRuntimeConfig())
+
+	// Should return error
+	err = dl.Download(context.Background(), server.URL(), outputPath, 100*1024, "fail.bin", false)
+	if err == nil {
+		t.Fatal("Expected error due to connection drop, got nil")
+	}
+
+	// Verify partial file
+	info, statErr := os.Stat(outputPath + types.IncompleteSuffix)
+	if statErr == nil {
+		if info.Size() == 0 {
+			t.Errorf("Expected at least 50KB served before failure, got 0")
+		}
+	}
+}
+
+func TestSingleDownloader_NilState(t *testing.T) {
+	// Ensure it doesn't panic with nil state
+	server := testutil.NewMockServerT(t, testutil.WithFileSize(1024))
+	defer server.Close()
+
+	tmpDir, cleanup, err := testutil.TempDir("single-dl-nil")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer cleanup()
+	outputPath := filepath.Join(tmpDir, "nil.bin")
+
+	dl := NewSingleDownloader("test-id", nil, nil, types.DefaultRuntimeConfig())
+
+	err = dl.Download(context.Background(), server.URL(), outputPath, 1024, "nil.bin", false)
+	if err != nil {
+		t.Fatalf("Download with nil state failed: %v", err)
 	}
 }

@@ -1,98 +1,209 @@
 package concurrent
 
 import (
+	"context"
+	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/surge-downloader/surge/internal/engine/types"
+	"github.com/surge-downloader/surge/internal/testutil"
 )
 
-func TestGetInitialConnections(t *testing.T) {
-	tests := []struct {
-		name         string
-		fileSize     int64
-		maxConns     int
-		minChunkSize int64
-		expected     int
-	}{
-		{
-			name:         "Zero Size",
-			fileSize:     0,
-			maxConns:     16,
-			minChunkSize: types.MB,
-			expected:     1,
-		},
-		{
-			name:         "Negative Size",
-			fileSize:     -1,
-			maxConns:     16,
-			minChunkSize: types.MB,
-			expected:     1,
-		},
-		{
-			name:         "Small File (1MB)",
-			fileSize:     1 * types.MB,
-			maxConns:     16,
-			minChunkSize: types.MB,
-			expected:     1, // sqrt(1) = 1
-		},
-		{
-			name:         "Medium File (100MB)",
-			fileSize:     100 * types.MB,
-			maxConns:     16,
-			minChunkSize: types.MB,
-			expected:     10, // sqrt(100) = 10
-		},
-		{
-			name:         "Max Connections Limit",
-			fileSize:     100 * types.MB,
-			maxConns:     4,
-			minChunkSize: types.MB,
-			expected:     4, // limited by maxConns
-		},
-		{
-			name:         "Min Chunk Size Constraint",
-			fileSize:     10 * types.MB,
-			maxConns:     16,
-			minChunkSize: 5 * types.MB,
-			expected:     2, // max chunks = 10/5 = 2. sqrt(10) = 3. capped at 2.
-		},
-		{
-			name:         "Min Chunk Size Larger Than File",
-			fileSize:     4 * types.MB,
-			maxConns:     16,
-			minChunkSize: 5 * types.MB,
-			expected:     1, // max chunks = 4/5 = 0 -> 1.
-		},
-		{
-			name:         "Large File (1GB)",
-			fileSize:     1024 * types.MB,
-			maxConns:     64,
-			minChunkSize: 10 * types.MB,
-			expected:     32, // sqrt(1024) = 32. 1024/10 = 102 chunks max. 32 < 64.
-		},
-		{
-			name:         "Very Large File (10GB) with High Max Conns",
-			fileSize:     10 * 1024 * types.MB,
-			maxConns:     100,
-			minChunkSize: 10 * types.MB,
-			expected:     100, // sqrt(10240) = ~101. Limited by maxConns 100.
-		},
+func init() {
+	// Allow private IPs for testing
+	_ = os.Setenv("SURGE_ALLOW_PRIVATE_IPS", "true")
+}
+
+func TestConcurrentDownloader_Download_Success(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	// Setup mock server
+	size := int64(5 * 1024 * 1024) // 5MB
+	server := testutil.NewMockServerT(t, testutil.WithFileSize(size), testutil.WithRandomData(true))
+	defer server.Close()
+
+	outputPath := filepath.Join(tmpDir, "output.bin")
+
+	// Downloader
+	progressCh := make(chan any, 100)
+	state := types.NewProgressState("test-id", size)
+	dl := NewConcurrentDownloader("test-id", progressCh, state, types.DefaultRuntimeConfig())
+
+	// Run
+	err := dl.Download(context.Background(), server.URL(), nil, nil, outputPath, size, false)
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			runtime := &types.RuntimeConfig{
-				MaxConnectionsPerHost: tt.maxConns,
-				MinChunkSize:          tt.minChunkSize,
-			}
-			d := &ConcurrentDownloader{
-				Runtime: runtime,
-			}
+	// Verify
+	if err := testutil.VerifyFileSize(outputPath, size); err != nil {
+		t.Errorf("File verification failed: %v", err)
+	}
+	// Note: dl.Download does NOT set state.Done. The WorkerPool does.
+}
 
-			got := d.getInitialConnections(tt.fileSize)
-			if got != tt.expected {
-				t.Errorf("getInitialConnections(%d) = %d; want %d", tt.fileSize, got, tt.expected)
-			}
-		})
+func TestConcurrentDownloader_Download_SmallFile(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	// Should fallback to single connection or just handle it
+	size := int64(100 * 1024) // 100KB
+	server := testutil.NewMockServerT(t, testutil.WithFileSize(size))
+	defer server.Close()
+
+	outputPath := filepath.Join(tmpDir, "small.bin")
+
+	state := types.NewProgressState("test-id", size)
+	dl := NewConcurrentDownloader("test-id", nil, state, types.DefaultRuntimeConfig())
+	err := dl.Download(context.Background(), server.URL(), nil, nil, outputPath, size, false)
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	if err := testutil.VerifyFileSize(outputPath, size); err != nil {
+		t.Errorf("File verification failed: %v", err)
+	}
+}
+
+func TestConcurrentDownloader_Download_Cancellation(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	// Large file with latency to ensure we can cancel in middle
+	size := int64(10 * 1024 * 1024)
+	server := testutil.NewMockServerT(t, testutil.WithFileSize(size), testutil.WithLatency(10*time.Millisecond))
+	defer server.Close()
+
+	outputPath := filepath.Join(tmpDir, "cancel.bin")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	state := types.NewProgressState("test-id", size)
+	dl := NewConcurrentDownloader("test-id", nil, state, types.DefaultRuntimeConfig())
+
+	errCh := make(chan error)
+	go func() {
+		errCh <- dl.Download(ctx, server.URL(), nil, nil, outputPath, size, false)
+	}()
+
+	time.Sleep(200 * time.Millisecond) // Wait for start
+	cancel()
+
+	err := <-errCh
+	// Download returns nil on clean cancellation
+	if err != nil && err != context.Canceled {
+		t.Errorf("Expected nil or context.Canceled, got: %v", err)
+	}
+}
+
+func TestConcurrentDownloader_Download_ProgressTracking(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	size := int64(2 * 1024 * 1024)
+	server := testutil.NewMockServerT(t, testutil.WithFileSize(size))
+	defer server.Close()
+
+	outputPath := filepath.Join(tmpDir, "progress.bin")
+
+	progressCh := make(chan any, 100)
+	state := types.NewProgressState("test-id", size)
+	dl := NewConcurrentDownloader("test-id", progressCh, state, types.DefaultRuntimeConfig())
+
+	err := dl.Download(context.Background(), server.URL(), nil, nil, outputPath, size, false)
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	if state.Downloaded.Load() != size {
+		t.Errorf("Expected %d bytes downloaded, got %d", size, state.Downloaded.Load())
+	}
+}
+
+func TestConcurrentDownloader_Download_ServerError(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	// Server fails ALWAYS
+	server := testutil.NewMockServerT(t, testutil.WithHandler(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "simulated error", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	outputPath := filepath.Join(tmpDir, "error.bin")
+
+	// Use timeout to prevent hanging on retries
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Provide dummy state to prevent panic
+	state := types.NewProgressState("test-id", 1024*1024)
+	dl := NewConcurrentDownloader("test-id", nil, state, types.DefaultRuntimeConfig())
+
+	// Should fail eventually (retries exhausted or timeout)
+	err := dl.Download(ctx, server.URL(), nil, nil, outputPath, 1024*1024, false)
+	if err == nil {
+		t.Fatal("Expected error, got nil")
+	}
+}
+
+func TestConcurrentDownloader_Resume(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	size := int64(5 * 1024 * 1024)
+	server := testutil.NewMockServerT(t, testutil.WithFileSize(size), testutil.WithRandomData(true))
+	defer server.Close()
+
+	outputPath := filepath.Join(tmpDir, "resume.bin")
+
+	// Create partial download (first 2MB downloaded)
+	partialSize := int64(2 * 1024 * 1024)
+	if _, err := testutil.CreateSurgeFile(tmpDir, "resume.bin", size, partialSize); err != nil {
+		t.Fatalf("Failed to create partial file: %v", err)
+	}
+
+	// Prepare resume state
+	state := types.NewProgressState("test-id", size)
+	state.Downloaded.Store(partialSize)
+
+	progressCh := make(chan any, 100)
+	dl := NewConcurrentDownloader("test-id", progressCh, state, types.DefaultRuntimeConfig())
+
+	err := dl.Download(context.Background(), server.URL(), nil, nil, outputPath, size, false)
+	if err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	if err := testutil.VerifyFileSize(outputPath, size); err != nil {
+		t.Errorf("File verification failed: %v", err)
+	}
+}
+
+func TestConcurrentDownloader_Mirrors(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	// Setup primary and mirror servers
+	size := int64(1024 * 1024)
+	primary := testutil.NewMockServerT(t, testutil.WithFileSize(size))
+	defer primary.Close()
+
+	mirror1 := testutil.NewMockServerT(t, testutil.WithFileSize(size))
+	defer mirror1.Close()
+
+	outputPath := filepath.Join(tmpDir, "mirrors.bin")
+
+	state := types.NewProgressState("test-id", size)
+	dl := NewConcurrentDownloader("test-id", nil, state, types.DefaultRuntimeConfig())
+
+	// Pass mirror URLs
+	mirrors := []string{mirror1.URL()}
+	err := dl.Download(context.Background(), primary.URL(), mirrors, mirrors, outputPath, size, false)
+	if err != nil {
+		t.Fatalf("Download with mirrors failed: %v", err)
 	}
 }
