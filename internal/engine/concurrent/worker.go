@@ -14,7 +14,7 @@ import (
 )
 
 // worker downloads tasks from the queue
-func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []string, file *os.File, queue *TaskQueue, totalSize int64, startTime time.Time, verbose bool, client *http.Client) error {
+func (d *ConcurrentDownloader) worker(ctx context.Context, id int, requests []*http.Request, file *os.File, queue *TaskQueue, totalSize int64, startTime time.Time, verbose bool, client *http.Client) error {
 	// Get pooled buffer
 	bufPtr := d.bufPool.Get().(*[]byte)
 	defer d.bufPool.Put(bufPtr)
@@ -24,7 +24,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 	defer utils.Debug("Worker %d finished", id)
 
 	// Initial mirror assignment: Round Robin based on ID
-	currentMirrorIdx := id % len(mirrors)
+	currentMirrorIdx := id % len(requests)
 
 	for {
 		// Get next task
@@ -44,20 +44,20 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 		for attempt := 0; attempt < maxRetries; attempt++ {
 			if attempt > 0 {
 
-				if len(mirrors) == 1 {
+				if len(requests) == 1 {
 					time.Sleep(time.Duration(1<<attempt) * types.RetryBaseDelay) // Exponential backoff incase of failure
 				}
 
 				// FAILOVER: Switch mirror on retry
 				// Report error for the previous mirror
-				d.ReportMirrorError(mirrors[currentMirrorIdx])
+				d.ReportMirrorError(requests[currentMirrorIdx].URL.String())
 
-				currentMirrorIdx = (currentMirrorIdx + 1) % len(mirrors)
-				utils.Debug("Worker %d: switching to mirror %s (attempt %d)", id, mirrors[currentMirrorIdx], attempt+1)
+				currentMirrorIdx = (currentMirrorIdx + 1) % len(requests)
+				utils.Debug("Worker %d: switching to mirror %s (attempt %d)", id, requests[currentMirrorIdx].URL.String(), attempt+1)
 			}
 
 			// Use current mirror
-			currentURL := mirrors[currentMirrorIdx]
+			currentReq := requests[currentMirrorIdx]
 
 			// Register active task with per-task cancellable context
 			taskCtx, taskCancel := context.WithCancel(ctx)
@@ -84,7 +84,7 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			}
 
 			taskStart := time.Now()
-			lastErr = d.downloadTask(taskCtx, currentURL, file, activeTask, buf, verbose, client, totalSize)
+			lastErr = d.downloadTask(taskCtx, currentReq, file, activeTask, buf, verbose, client, totalSize)
 
 			// CRITICAL: Capture external cancellation state BEFORE calling taskCancel()
 			// If we call taskCancel() first, taskCtx.Err() will always be non-nil
@@ -109,8 +109,8 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 				// Health monitor cancelled this task - re-queue REMAINING work only
 
 				// Force rotation to next mirror to avoid getting stuck on the slow one
-				currentMirrorIdx = (currentMirrorIdx + 1) % len(mirrors)
-				utils.Debug("Worker %d: Health check cancelled task, rotating from mirror %s to %s", id, mirrors[(currentMirrorIdx+len(mirrors)-1)%len(mirrors)], mirrors[currentMirrorIdx])
+				currentMirrorIdx = (currentMirrorIdx + 1) % len(requests)
+				utils.Debug("Worker %d: Health check cancelled task, rotating from mirror %s to %s", id, requests[(currentMirrorIdx+len(requests)-1)%len(requests)].URL.String(), requests[currentMirrorIdx].URL.String())
 
 				if remaining := activeTask.RemainingTask(); remaining != nil {
 					// Clamp to original task end (don't go past original boundary)
@@ -180,26 +180,13 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 }
 
 // downloadTask downloads a single byte range and writes to file at offset
-func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, file *os.File, activeTask *ActiveTask, buf []byte, verbose bool, client *http.Client, totalSize int64) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawurl, nil)
-	if err != nil {
-		return err
-	}
+func (d *ConcurrentDownloader) downloadTask(ctx context.Context, templateReq *http.Request, file *os.File, activeTask *ActiveTask, buf []byte, verbose bool, client *http.Client, totalSize int64) error {
+	// Clone request template (shallow copy of Request struct, deep copy of Header)
+	req := templateReq.WithContext(ctx)
+	req.Header = templateReq.Header.Clone()
 
 	task := activeTask.Task
 
-	// Apply custom headers first (from browser extension: cookies, auth, referer, etc.)
-	for key, val := range d.Headers {
-		// Skip Range header - we set it ourselves for parallel downloads
-		if key != "Range" {
-			req.Header.Set(key, val)
-		}
-	}
-
-	// Set User-Agent from config only if not provided in custom headers
-	if req.Header.Get("User-Agent") == "" {
-		req.Header.Set("User-Agent", d.Runtime.GetUserAgent())
-	}
 	// Range header is always set for partial downloads (overrides any browser Range header)
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", task.Offset, task.Offset+task.Length-1))
 
