@@ -310,7 +310,7 @@ func startHTTPServer(ln net.Listener, port int, defaultOutputDir string, service
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// Access-Control-Allow-Origin handled by corsMiddleware
 
 		// Get event stream
 		stream, cleanup, err := service.StreamEvents(r.Context())
@@ -507,7 +507,11 @@ func startHTTPServer(ln net.Listener, port int, defaultOutputDir string, service
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Set CORS headers
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if checkOrigin(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS, PUT, PATCH")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
 
@@ -519,6 +523,26 @@ func corsMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func checkOrigin(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	// Allow browser extensions
+	if strings.HasPrefix(origin, "chrome-extension://") ||
+		strings.HasPrefix(origin, "moz-extension://") ||
+		strings.HasPrefix(origin, "safari-web-extension://") {
+		return true
+	}
+	// Allow local development/web UI
+	if origin == "http://localhost" || strings.HasPrefix(origin, "http://localhost:") {
+		return true
+	}
+	if origin == "http://127.0.0.1" || strings.HasPrefix(origin, "http://127.0.0.1:") {
+		return true
+	}
+	return false
 }
 
 func authMiddleware(token string, next http.Handler) http.Handler {
