@@ -2,6 +2,7 @@ package state
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -466,7 +467,7 @@ func TestListAllDownloads(t *testing.T) {
 	}
 
 	// List all
-	downloads, err := ListAllDownloads()
+	downloads, err := ListAllDownloads(0, -1)
 	if err != nil {
 		t.Fatalf("ListAllDownloads failed: %v", err)
 	}
@@ -481,13 +482,59 @@ func TestListAllDownloads_Empty(t *testing.T) {
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 	defer CloseDB()
 
-	downloads, err := ListAllDownloads()
+	downloads, err := ListAllDownloads(0, -1)
 	if err != nil {
 		t.Fatalf("ListAllDownloads failed: %v", err)
 	}
 
 	if len(downloads) != 0 {
 		t.Errorf("ListAllDownloads returned %d items, want 0", len(downloads))
+	}
+}
+
+func TestListAllDownloads_Pagination(t *testing.T) {
+	tmpDir := setupTestDB(t)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	defer CloseDB()
+
+	// Add 5 downloads
+	for i := 0; i < 5; i++ {
+		e := types.DownloadEntry{
+			ID:       fmt.Sprintf("dl-%d", i),
+			URL:      fmt.Sprintf("https://e.com/%d", i),
+			DestPath: fmt.Sprintf("/tmp/%d", i),
+			Status:   "completed",
+		}
+		if err := AddToMasterList(e); err != nil {
+			t.Fatalf("AddToMasterList failed: %v", err)
+		}
+	}
+
+	// Page 1: 2 items
+	page1, err := ListAllDownloads(0, 2)
+	if err != nil {
+		t.Fatalf("ListAllDownloads page1 failed: %v", err)
+	}
+	if len(page1) != 2 {
+		t.Errorf("Page 1 length = %d, want 2", len(page1))
+	}
+
+	// Page 2: 2 items
+	page2, err := ListAllDownloads(2, 2)
+	if err != nil {
+		t.Fatalf("ListAllDownloads page2 failed: %v", err)
+	}
+	if len(page2) != 2 {
+		t.Errorf("Page 2 length = %d, want 2", len(page2))
+	}
+
+	// Page 3: 1 item
+	page3, err := ListAllDownloads(4, 2)
+	if err != nil {
+		t.Fatalf("ListAllDownloads page3 failed: %v", err)
+	}
+	if len(page3) != 1 {
+		t.Errorf("Page 3 length = %d, want 1", len(page3))
 	}
 }
 
@@ -524,7 +571,7 @@ func TestRemoveCompletedDownloads(t *testing.T) {
 	}
 
 	// Verify only paused remains
-	downloads, _ := ListAllDownloads()
+	downloads, _ := ListAllDownloads(0, -1)
 	if len(downloads) != 1 {
 		t.Errorf("Expected 1 download remaining, got %d", len(downloads))
 	}
