@@ -76,6 +76,11 @@ func initDB() error {
 		return fmt.Errorf("failed to create tables: %w", err)
 	}
 
+	// Create indexes
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_tasks_download_id ON tasks(download_id)"); err != nil {
+		return fmt.Errorf("failed to create indexes: %w", err)
+	}
+
 	// Migration: Add mirrors column if not exists
 	_, _ = db.Exec("ALTER TABLE downloads ADD COLUMN mirrors TEXT")
 
