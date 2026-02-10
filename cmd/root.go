@@ -686,45 +686,42 @@ func handleDownload(w http.ResponseWriter, r *http.Request, defaultOutputDir str
 		return
 	}
 
-	// Prepare output path
-	outPath := req.Path
-	if req.RelativeToDefaultDir && req.Path != "" {
-		// Resolve relative to default download directory
-		baseDir := settings.General.DefaultDownloadDir
-		if baseDir == "" {
-			baseDir = defaultOutputDir
-		}
-		if baseDir == "" {
-			baseDir = "."
-		}
-		outPath = filepath.Join(baseDir, req.Path)
-		if err := os.MkdirAll(outPath, 0o755); err != nil {
-			http.Error(w, "Failed to create directory: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
+	// Resolve base directory
+	baseDir := settings.General.DefaultDownloadDir
+	if baseDir == "" {
+		baseDir = defaultOutputDir
+	}
+	if baseDir == "" {
+		baseDir = "."
+	}
+	baseDir = utils.EnsureAbsPath(baseDir)
 
-	} else if outPath == "" {
-		if defaultOutputDir != "" {
-			outPath = defaultOutputDir
-			if err := os.MkdirAll(outPath, 0o755); err != nil {
-				http.Error(w, "Failed to create output directory: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-		} else {
-			if settings.General.DefaultDownloadDir != "" {
-				outPath = settings.General.DefaultDownloadDir
-				if err := os.MkdirAll(outPath, 0o755); err != nil {
-					http.Error(w, "Failed to create output directory: "+err.Error(), http.StatusInternalServerError)
-					return
-				}
-			} else {
-				outPath = "."
-			}
-		}
+	// Prepare output path
+	var outPath string
+	if req.RelativeToDefaultDir && req.Path != "" {
+		outPath = filepath.Join(baseDir, req.Path)
+	} else if req.Path != "" {
+		outPath = req.Path
+	} else {
+		outPath = baseDir
 	}
 
 	// Enforce absolute path to ensure resume works even if CWD changes
 	outPath = utils.EnsureAbsPath(outPath)
+
+	// SECURITY: Ensure the download directory is within the base directory
+	// This prevents arbitrary file writes via the API
+	rel, err := filepath.Rel(baseDir, outPath)
+	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		http.Error(w, "Invalid path: download path must be within the default download directory", http.StatusForbidden)
+		return
+	}
+
+	// Create directory
+	if err := os.MkdirAll(outPath, 0o755); err != nil {
+		http.Error(w, "Failed to create directory: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	// Check settings for extension prompt and duplicates
 	// Logic modified to distinguish between ACTIVE (corruption risk) and COMPLETED (overwrite safe)
