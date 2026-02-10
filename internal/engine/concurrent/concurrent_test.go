@@ -2,6 +2,7 @@ package concurrent
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,6 +11,12 @@ import (
 	"github.com/surge-downloader/surge/internal/engine/types"
 	"github.com/surge-downloader/surge/internal/testutil"
 )
+
+func TestMain(m *testing.M) {
+	// Allow private IPs for testing against local mock server
+	os.Setenv("SURGE_ALLOW_PRIVATE_IPS", "true")
+	os.Exit(m.Run())
+}
 
 // Helper to init state just for tests (avoiding global init if possible,
 // using temporary directories for each test)
