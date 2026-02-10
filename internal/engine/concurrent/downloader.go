@@ -215,10 +215,10 @@ func (d *ConcurrentDownloader) newConcurrentClient(numConns int) *http.Client {
 		TLSNextProto:       make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 
 		// Dial settings for TCP reliability
-		DialContext: (&net.Dialer{
+		DialContext: utils.SafeDialContext(&net.Dialer{
 			Timeout:   types.DialTimeout,
 			KeepAlive: types.KeepAliveDuration,
-		}).DialContext,
+		}),
 	}
 
 	return &http.Client{
