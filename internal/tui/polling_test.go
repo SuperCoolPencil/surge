@@ -43,8 +43,7 @@ func TestStateSync(t *testing.T) {
 
 	go func() {
 		// Simulate download start (from external source)
-		// Current implementation of DownloadStartedMsg doesn't carry state
-		// So TUI will create its own state (BUG).
+		// Ensure DownloadStartedMsg carries the worker state so TUI uses it instead of creating its own.
 		time.Sleep(200 * time.Millisecond)
 		p.Send(events.DownloadStartedMsg{
 			DownloadID: downloadID,
@@ -94,5 +93,10 @@ func TestStateSync(t *testing.T) {
 	// With fix: TUI uses workerState, so Downloaded becomes 500
 	if target.Downloaded != 500 {
 		t.Errorf("State not synced. TUI Downloaded=%d, Worker Downloaded=500", target.Downloaded)
+	}
+
+	// Verify that the state object is shared
+	if target.state != workerState {
+		t.Error("State object not shared between Worker and TUI")
 	}
 }
