@@ -131,12 +131,7 @@ func (d *ConcurrentDownloader) calculateChunkSize(fileSize int64, numConns int) 
 	}
 
 	// Align to 4KB
-	chunkSize = (chunkSize / types.AlignSize) * types.AlignSize
-	if chunkSize == 0 {
-		chunkSize = types.AlignSize
-	}
-
-	return chunkSize
+	return alignChunkSize(chunkSize)
 }
 
 // determineChunkSize decides the strategy (Sequential vs Parallel)
@@ -148,15 +143,20 @@ func (d *ConcurrentDownloader) determineChunkSize(fileSize int64, numConns int) 
 			chunkSize = 2 * 1024 * 1024 // Default 2MB if not configured
 		}
 		// Align to 4KB
-		chunkSize = (chunkSize / types.AlignSize) * types.AlignSize
-		if chunkSize == 0 {
-			chunkSize = types.AlignSize
-		}
-		return chunkSize
+		return alignChunkSize(chunkSize)
 	}
 
 	// Parallel mode: Use large shards
 	return d.calculateChunkSize(fileSize, numConns)
+}
+
+// alignChunkSize aligns the chunk size to the alignment boundary (4KB)
+func alignChunkSize(chunkSize int64) int64 {
+	aligned := (chunkSize / types.AlignSize) * types.AlignSize
+	if aligned == 0 {
+		return types.AlignSize
+	}
+	return aligned
 }
 
 // createTasks generates initial task queue from file size and chunk size
