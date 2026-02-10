@@ -94,18 +94,6 @@ func sendToServer(url string, mirrors []string, outPath string, port int) error 
 		return fmt.Errorf("server error: %s - %s", resp.Status, string(body))
 	}
 
-	// Optional: Print response info (ID etc) if needed, but usually caller handles success msg
-	// Or we can parse ID here and return it?
-	// The caller (add.go/root.go) might want to know ID.
-	// For now, keep it simple as error/nil.
-
-	var respData map[string]interface{}
-	_ = json.NewDecoder(resp.Body).Decode(&respData) // Ignore error? safely
-	if id, ok := respData["id"].(string); ok {
-		// Could log debug
-		_ = id
-	}
-
 	return nil
 }
 
