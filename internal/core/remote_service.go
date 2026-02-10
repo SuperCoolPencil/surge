@@ -153,6 +153,16 @@ func (s *RemoteDownloadService) Pause(id string) error {
 	return nil
 }
 
+// PauseAll pauses all active downloads.
+func (s *RemoteDownloadService) PauseAll() error {
+	resp, err := s.doRequest("POST", "/pause-all", nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return nil
+}
+
 // Resume resumes a paused download.
 func (s *RemoteDownloadService) Resume(id string) error {
 	resp, err := s.doRequest("POST", "/resume?id="+url.QueryEscape(id), nil)

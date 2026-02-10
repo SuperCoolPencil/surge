@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"fmt"
-	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/surge-downloader/surge/internal/config"
+	"github.com/surge-downloader/surge/internal/core"
 	"github.com/surge-downloader/surge/internal/engine/state"
-	"github.com/surge-downloader/surge/internal/utils"
 )
 
 var pauseCmd = &cobra.Command{
@@ -27,11 +29,23 @@ var pauseCmd = &cobra.Command{
 
 		port := readActivePort()
 
+		var service *core.RemoteDownloadService
+		if port > 0 {
+			tokenFile := filepath.Join(config.GetSurgeDir(), "token")
+			tokenBytes, _ := os.ReadFile(tokenFile)
+			token := strings.TrimSpace(string(tokenBytes))
+			service = core.NewRemoteDownloadService(fmt.Sprintf("http://127.0.0.1:%d", port), token)
+		}
+
 		if all {
 			// Pause all downloads
 			if port > 0 {
-				// TODO: Implement /pause-all endpoint or iterate
-				fmt.Println("Pausing all downloads is not yet implemented for running server.")
+				// Send to running server
+				if err := service.PauseAll(); err != nil {
+					fmt.Fprintf(os.Stderr, "Error pausing all downloads: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Println("All active downloads paused.")
 			} else {
 				// Offline mode: update DB directly
 				if err := state.PauseAllDownloads(); err != nil {
@@ -54,19 +68,8 @@ var pauseCmd = &cobra.Command{
 
 		if port > 0 {
 			// Send to running server
-			resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/pause?id=%s", port, id), "application/json", nil)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error connecting to server: %v\n", err)
-				os.Exit(1)
-			}
-			defer func() {
-				if err := resp.Body.Close(); err != nil {
-					utils.Debug("Error closing response body: %v", err)
-				}
-			}()
-
-			if resp.StatusCode != http.StatusOK {
-				fmt.Fprintf(os.Stderr, "Error: server returned %s\n", resp.Status)
+			if err := service.Pause(id); err != nil {
+				fmt.Fprintf(os.Stderr, "Error pausing download: %v\n", err)
 				os.Exit(1)
 			}
 			fmt.Printf("Paused download %s\n", id[:8])
