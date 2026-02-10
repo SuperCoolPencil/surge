@@ -293,12 +293,11 @@ func startHTTPServer(ln net.Listener, port int, defaultOutputDir string, service
 
 	mux := http.NewServeMux()
 
-	// Health check endpoint (Public)
+	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "ok",
-			"port":   port,
 		}); err != nil {
 			utils.Debug("Failed to encode response: %v", err)
 		}
@@ -514,6 +513,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS, PUT, PATCH")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+		w.Header().Set("X-Surge-Server", "true")
 
 		// Handle preflight requests
 		if r.Method == "OPTIONS" {
@@ -547,12 +547,6 @@ func checkOrigin(origin string) bool {
 
 func authMiddleware(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Allow health check without auth
-		if r.URL.Path == "/health" {
-			next.ServeHTTP(w, r)
-			return
-		}
-
 		// Allow OPTIONS for CORS preflight
 		if r.Method == "OPTIONS" {
 			next.ServeHTTP(w, r)
