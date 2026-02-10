@@ -81,7 +81,7 @@ func printDownloads(jsonOutput bool) {
 
 	// If no server running or no active downloads, fall back to database
 	if len(downloads) == 0 {
-		dbDownloads, err := state.ListAllDownloads()
+		dbDownloads, err := state.ListAllDownloads(0, -1)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error listing downloads: %v\n", err)
 			os.Exit(1)
@@ -197,7 +197,7 @@ func showDownloadDetails(partialID string, jsonOutput bool) {
 	}
 
 	// Fall back to database - search through all downloads
-	downloads, err := state.ListAllDownloads()
+	downloads, err := state.ListAllDownloads(0, -1)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error listing downloads: %v\n", err)
 		os.Exit(1)

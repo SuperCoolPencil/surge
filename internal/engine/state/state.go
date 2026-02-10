@@ -62,25 +62,88 @@ func SaveState(url string, destPath string, state *types.DownloadState) error {
 		}
 
 		// 2. Refresh tasks
-		// First delete existing tasks for this download
-		if _, err := tx.Exec("DELETE FROM tasks WHERE download_id = ?", state.ID); err != nil {
-			return fmt.Errorf("failed to delete old tasks: %w", err)
-		}
+		// Optimize: Use diffing instead of delete + insert
+		existingTasks := make(map[int64]struct {
+			ID     int64
+			Length int64
+		})
 
-		// Insert new tasks
-		stmt, err := tx.Prepare("INSERT INTO tasks (download_id, offset, length) VALUES (?, ?, ?)")
+		rows, err := tx.Query("SELECT id, offset, length FROM tasks WHERE download_id = ?", state.ID)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to query existing tasks: %w", err)
 		}
-		defer func() {
-			if err := stmt.Close(); err != nil {
-				utils.Debug("Error closing statement: %v", err)
-			}
-		}()
+		defer rows.Close()
 
+		// Read all existing tasks
+		for rows.Next() {
+			var id, offset, length int64
+			if err := rows.Scan(&id, &offset, &length); err != nil {
+				return err
+			}
+			existingTasks[offset] = struct {
+				ID     int64
+				Length int64
+			}{ID: id, Length: length}
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("error iterating tasks: %w", err)
+		}
+
+		var toInsert []types.Task
+		var toDeleteIDs []int64
+
+		// Identify what to keep, insert, or delete
 		for _, task := range state.Tasks {
-			if _, err := stmt.Exec(state.ID, task.Offset, task.Length); err != nil {
-				return fmt.Errorf("failed to insert task: %w", err)
+			if existing, exists := existingTasks[task.Offset]; exists {
+				if existing.Length == task.Length {
+					// Exact match, keep it
+					delete(existingTasks, task.Offset)
+					continue
+				}
+				// Length changed, treat as replace
+				toDeleteIDs = append(toDeleteIDs, existing.ID)
+				toInsert = append(toInsert, task)
+				delete(existingTasks, task.Offset)
+			} else {
+				// New task
+				toInsert = append(toInsert, task)
+			}
+		}
+
+		// Anything remaining in existingTasks should be deleted
+		for _, existing := range existingTasks {
+			toDeleteIDs = append(toDeleteIDs, existing.ID)
+		}
+
+		// Perform deletions
+		if len(toDeleteIDs) > 0 {
+			// Using a prepared statement for deletion is safer/easier than constructing a large IN clause
+			// since we are in a transaction, the overhead is minimal.
+			delStmt, err := tx.Prepare("DELETE FROM tasks WHERE id = ?")
+			if err != nil {
+				return err
+			}
+			defer delStmt.Close()
+
+			for _, id := range toDeleteIDs {
+				if _, err := delStmt.Exec(id); err != nil {
+					return fmt.Errorf("failed to delete task: %w", err)
+				}
+			}
+		}
+
+		// Perform insertions
+		if len(toInsert) > 0 {
+			insStmt, err := tx.Prepare("INSERT INTO tasks (download_id, offset, length) VALUES (?, ?, ?)")
+			if err != nil {
+				return err
+			}
+			defer insStmt.Close()
+
+			for _, task := range toInsert {
+				if _, err := insStmt.Exec(state.ID, task.Offset, task.Length); err != nil {
+					return fmt.Errorf("failed to insert task: %w", err)
+				}
 			}
 		}
 
@@ -203,28 +266,15 @@ func DeleteState(id string, url string, destPath string) error {
 
 // ================== Master List Functions ==================
 
-// LoadMasterList loads ALL downloads (paused and completed)
-func LoadMasterList() (*types.MasterList, error) {
-	db := getDBHelper()
-	if db == nil {
-		// Return empty list if DB fails, to behave like "no file found"
-		return &types.MasterList{Downloads: []types.DownloadEntry{}}, nil
-	}
-
-	rows, err := db.Query(`
-		SELECT id, url, dest_path, filename, status, total_size, downloaded, completed_at, time_taken, url_hash, mirrors 
-		FROM downloads
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query downloads: %w", err)
-	}
+// helper to scan rows into entries
+func scanDownloadRows(rows *sql.Rows) ([]types.DownloadEntry, error) {
+	var entries []types.DownloadEntry
 	defer func() {
 		if err := rows.Close(); err != nil {
 			utils.Debug("Error closing rows: %v", err)
 		}
 	}()
 
-	var list types.MasterList
 	for rows.Next() {
 		var e types.DownloadEntry
 		var completedAt, timeTaken sql.NullInt64      // handle nulls
@@ -252,11 +302,45 @@ func LoadMasterList() (*types.MasterList, error) {
 		if mirrors.Valid && mirrors.String != "" {
 			e.Mirrors = strings.Split(mirrors.String, ",")
 		}
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
 
-		list.Downloads = append(list.Downloads, e)
+// LoadMasterList loads downloads with pagination support
+// If limit <= 0, it loads all downloads
+func LoadMasterList(offset, limit int) (*types.MasterList, error) {
+	db := getDBHelper()
+	if db == nil {
+		// Return empty list if DB fails, to behave like "no file found"
+		return &types.MasterList{Downloads: []types.DownloadEntry{}}, nil
 	}
 
-	return &list, nil
+	var rows *sql.Rows
+	var err error
+
+	query := `
+		SELECT id, url, dest_path, filename, status, total_size, downloaded, completed_at, time_taken, url_hash, mirrors
+		FROM downloads
+	`
+
+	if limit > 0 {
+		query += " LIMIT ? OFFSET ?"
+		rows, err = db.Query(query, limit, offset)
+	} else {
+		rows, err = db.Query(query)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to query downloads: %w", err)
+	}
+
+	entries, err := scanDownloadRows(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	return &types.MasterList{Downloads: entries}, nil
 }
 
 // AddToMasterList adds or updates a download entry
@@ -354,35 +438,40 @@ func GetDownload(id string) (*types.DownloadEntry, error) {
 
 // LoadPausedDownloads returns all paused downloads
 func LoadPausedDownloads() ([]types.DownloadEntry, error) {
-	// Reuse LoadMasterList logic or optimize with WHERE
-	list, err := LoadMasterList()
-	if err != nil {
-		return nil, err
+	db := getDBHelper()
+	if db == nil {
+		return nil, fmt.Errorf("database not initialized")
 	}
 
-	var paused []types.DownloadEntry
-	for _, e := range list.Downloads {
-		if e.Status == "paused" || e.Status == "queued" {
-			paused = append(paused, e)
-		}
+	rows, err := db.Query(`
+		SELECT id, url, dest_path, filename, status, total_size, downloaded, completed_at, time_taken, url_hash, mirrors
+		FROM downloads
+		WHERE status IN ('paused', 'queued')
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query paused downloads: %w", err)
 	}
-	return paused, nil
+
+	return scanDownloadRows(rows)
 }
 
 // LoadCompletedDownloads returns all completed downloads
 func LoadCompletedDownloads() ([]types.DownloadEntry, error) {
-	list, err := LoadMasterList()
-	if err != nil {
-		return nil, err
+	db := getDBHelper()
+	if db == nil {
+		return nil, fmt.Errorf("database not initialized")
 	}
 
-	var completed []types.DownloadEntry
-	for _, e := range list.Downloads {
-		if e.Status == "completed" {
-			completed = append(completed, e)
-		}
+	rows, err := db.Query(`
+		SELECT id, url, dest_path, filename, status, total_size, downloaded, completed_at, time_taken, url_hash, mirrors
+		FROM downloads
+		WHERE status = 'completed'
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query completed downloads: %w", err)
 	}
-	return completed, nil
+
+	return scanDownloadRows(rows)
 }
 
 // CheckDownloadExists checks if a download with the given URL exists in the database
@@ -444,9 +533,9 @@ func ResumeAllDownloads() error {
 	return err
 }
 
-// ListAllDownloads returns all downloads
-func ListAllDownloads() ([]types.DownloadEntry, error) {
-	list, err := LoadMasterList()
+// ListAllDownloads returns all downloads with optional pagination
+func ListAllDownloads(offset, limit int) ([]types.DownloadEntry, error) {
+	list, err := LoadMasterList(offset, limit)
 	if err != nil {
 		return nil, err
 	}

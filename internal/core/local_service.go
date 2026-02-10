@@ -330,7 +330,7 @@ func (s *LocalDownloadService) List() ([]types.DownloadStatus, error) {
 	}
 
 	// 2. Fetch from database for history/paused/completed
-	dbDownloads, err := state.ListAllDownloads()
+	dbDownloads, err := state.ListAllDownloads(0, -1)
 	if err == nil {
 		// Create a map of existing IDs to avoid duplicates
 		existingIDs := make(map[string]bool)

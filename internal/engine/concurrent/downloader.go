@@ -131,12 +131,7 @@ func (d *ConcurrentDownloader) calculateChunkSize(fileSize int64, numConns int) 
 	}
 
 	// Align to 4KB
-	chunkSize = (chunkSize / types.AlignSize) * types.AlignSize
-	if chunkSize == 0 {
-		chunkSize = types.AlignSize
-	}
-
-	return chunkSize
+	return alignChunkSize(chunkSize)
 }
 
 // determineChunkSize decides the strategy (Sequential vs Parallel)
@@ -148,15 +143,20 @@ func (d *ConcurrentDownloader) determineChunkSize(fileSize int64, numConns int) 
 			chunkSize = 2 * 1024 * 1024 // Default 2MB if not configured
 		}
 		// Align to 4KB
-		chunkSize = (chunkSize / types.AlignSize) * types.AlignSize
-		if chunkSize == 0 {
-			chunkSize = types.AlignSize
-		}
-		return chunkSize
+		return alignChunkSize(chunkSize)
 	}
 
 	// Parallel mode: Use large shards
 	return d.calculateChunkSize(fileSize, numConns)
+}
+
+// alignChunkSize aligns the chunk size to the alignment boundary (4KB)
+func alignChunkSize(chunkSize int64) int64 {
+	aligned := (chunkSize / types.AlignSize) * types.AlignSize
+	if aligned == 0 {
+		return types.AlignSize
+	}
+	return aligned
 }
 
 // createTasks generates initial task queue from file size and chunk size
@@ -215,10 +215,10 @@ func (d *ConcurrentDownloader) newConcurrentClient(numConns int) *http.Client {
 		TLSNextProto:       make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 
 		// Dial settings for TCP reliability
-		DialContext: (&net.Dialer{
+		DialContext: utils.SafeDialContext(&net.Dialer{
 			Timeout:   types.DialTimeout,
 			KeepAlive: types.KeepAliveDuration,
-		}).DialContext,
+		}),
 	}
 
 	return &http.Client{
@@ -462,11 +462,40 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 		workerMirrors = []string{rawurl}
 	}
 
+	// Create request templates for each mirror (parse once, reuse many times)
+	var workerRequests []*http.Request
+	for _, mirrorURL := range workerMirrors {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, mirrorURL, nil)
+		if err != nil {
+			utils.Debug("Failed to create request template for %s: %v", mirrorURL, err)
+			continue
+		}
+
+		// Apply custom headers (from browser extension: cookies, auth, referer, etc.)
+		for key, val := range d.Headers {
+			// Skip Range header - we set it ourselves for parallel downloads
+			if key != "Range" {
+				req.Header.Set(key, val)
+			}
+		}
+
+		// Set User-Agent from config only if not provided in custom headers
+		if req.Header.Get("User-Agent") == "" {
+			req.Header.Set("User-Agent", d.Runtime.GetUserAgent())
+		}
+
+		workerRequests = append(workerRequests, req)
+	}
+
+	if len(workerRequests) == 0 {
+		return fmt.Errorf("no valid mirror URLs")
+	}
+
 	for i := 0; i < numConns; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			err := d.worker(downloadCtx, workerID, workerMirrors, outFile, queue, fileSize, startTime, verbose, client)
+			err := d.worker(downloadCtx, workerID, workerRequests, outFile, queue, fileSize, startTime, verbose, client)
 			if err != nil && err != context.Canceled {
 				workerErrors <- err
 			}

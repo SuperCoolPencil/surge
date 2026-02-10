@@ -69,8 +69,8 @@ func openFile(path string) error {
 }
 
 // readURLsFromFile reads URLs from a file, one per line (skips empty lines, comments, and duplicates)
-func readURLsFromFile(filepath string) ([]string, error) {
-	file, err := os.Open(filepath)
+func readURLsFromFile(path string) ([]string, error) {
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
@@ -258,11 +258,25 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case events.ProgressMsg:
+		shouldShow := func(d *DownloadModel) bool {
+			switch m.activeTab {
+			case TabQueued:
+				return !d.done && d.Speed <= 0
+			case TabActive:
+				return !d.done && (d.Speed > 0 || d.Connections > 0)
+			case TabDone:
+				return d.done
+			}
+			return false
+		}
+
 		for _, d := range m.downloads {
 			if d.ID == msg.DownloadID {
 				if d.done || d.paused {
 					break
 				}
+
+				wasVisible := shouldShow(d)
 
 				d.Downloaded = msg.Downloaded
 				d.Total = msg.Total
@@ -310,7 +324,10 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.lastSpeedHistoryUpdate = time.Now()
 				}
 
-				m.UpdateListItems()
+				nowVisible := shouldShow(d)
+				if wasVisible != nowVisible {
+					m.UpdateListItems()
+				}
 				break
 			}
 		}

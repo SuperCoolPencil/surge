@@ -14,6 +14,11 @@ import (
 	"github.com/surge-downloader/surge/internal/testutil"
 )
 
+func TestMain(m *testing.M) {
+	os.Setenv("SURGE_ALLOW_PRIVATE_IPS", "true")
+	os.Exit(m.Run())
+}
+
 func TestUniqueFilePath(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "surge-test-*")
 	if err != nil {

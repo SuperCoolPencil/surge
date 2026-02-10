@@ -32,8 +32,8 @@ func readActivePort() int {
 }
 
 // readURLsFromFile reads URLs from a file, one per line
-func readURLsFromFile(filepath string) ([]string, error) {
-	file, err := os.Open(filepath)
+func readURLsFromFile(path string) ([]string, error) {
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
@@ -94,18 +94,6 @@ func sendToServer(url string, mirrors []string, outPath string, port int) error 
 		return fmt.Errorf("server error: %s - %s", resp.Status, string(body))
 	}
 
-	// Optional: Print response info (ID etc) if needed, but usually caller handles success msg
-	// Or we can parse ID here and return it?
-	// The caller (add.go/root.go) might want to know ID.
-	// For now, keep it simple as error/nil.
-
-	var respData map[string]interface{}
-	_ = json.NewDecoder(resp.Body).Decode(&respData) // Ignore error? safely
-	if id, ok := respData["id"].(string); ok {
-		// Could log debug
-		_ = id
-	}
-
 	return nil
 }
 
@@ -155,7 +143,7 @@ func resolveDownloadID(partialID string) (string, error) {
 	}
 
 	// 2. Get all downloads from database
-	downloads, err := state.ListAllDownloads()
+	downloads, err := state.ListAllDownloads(0, -1)
 	if err == nil {
 		for _, d := range downloads {
 			candidates = append(candidates, d.ID)

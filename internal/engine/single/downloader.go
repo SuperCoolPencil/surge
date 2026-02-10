@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -27,7 +28,21 @@ type SingleDownloader struct {
 // NewSingleDownloader creates a new single-threaded downloader with all required parameters
 func NewSingleDownloader(id string, progressCh chan<- any, state *types.ProgressState, runtime *types.RuntimeConfig) *SingleDownloader {
 	return &SingleDownloader{
-		Client:       &http.Client{Timeout: 0},
+		Client: &http.Client{
+			Timeout: 0,
+			Transport: &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
+				DialContext: utils.SafeDialContext(&net.Dialer{
+					Timeout:   types.DialTimeout,
+					KeepAlive: types.KeepAliveDuration,
+				}),
+				MaxIdleConns:          types.DefaultMaxIdleConns,
+				IdleConnTimeout:       types.DefaultIdleConnTimeout,
+				TLSHandshakeTimeout:   types.DefaultTLSHandshakeTimeout,
+				ResponseHeaderTimeout: types.DefaultResponseHeaderTimeout,
+				ExpectContinueTimeout: types.DefaultExpectContinueTimeout,
+			},
+		},
 		ProgressChan: progressCh,
 		ID:           id,
 		State:        state,
