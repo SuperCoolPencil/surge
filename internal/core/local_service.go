@@ -439,6 +439,16 @@ func (s *LocalDownloadService) Pause(id string) error {
 	return fmt.Errorf("download not found")
 }
 
+// PauseAll pauses all active downloads.
+func (s *LocalDownloadService) PauseAll() error {
+	if s.Pool == nil {
+		return fmt.Errorf("worker pool not initialized")
+	}
+
+	s.Pool.PauseAll()
+	return nil
+}
+
 // Resume resumes a paused download.
 func (s *LocalDownloadService) Resume(id string) error {
 	if s.Pool == nil {

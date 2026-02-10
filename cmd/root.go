@@ -410,6 +410,24 @@ func startHTTPServer(ln net.Listener, port int, defaultOutputDir string, service
 		}
 	})
 
+	// Pause All endpoint (Protected)
+	mux.HandleFunc("/pause-all", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		if err := service.PauseAll(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "paused_all"}); err != nil {
+			utils.Debug("Failed to encode response: %v", err)
+		}
+	})
+
 	// Resume endpoint (Protected)
 	mux.HandleFunc("/resume", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
