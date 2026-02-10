@@ -53,6 +53,11 @@ func NewConcurrentDownloader(id string, progressCh chan<- any, progState *types.
 
 // getInitialConnections returns the starting number of connections based on file size
 func (d *ConcurrentDownloader) getInitialConnections(fileSize int64) int {
+	// If SequentialDownload is enabled, we strictly use 1 connection
+	if d.Runtime.SequentialDownload {
+		return 1
+	}
+
 	maxConns := d.Runtime.GetMaxConnectionsPerHost()
 	minChunkSize := d.Runtime.GetMinChunkSize() // e.g., 1MB or 5MB
 
