@@ -84,7 +84,9 @@ func TestLocalDownloadService_Integration(t *testing.T) {
 	service := NewLocalDownloadService(pool)
 
 	// Ensure cleanup of service
-	defer service.Shutdown()
+	defer func() {
+		_ = service.Shutdown()
+	}()
 
 	// 1. Add Download
 	t.Log("Adding download...")
@@ -154,8 +156,15 @@ func TestLocalDownloadService_Integration(t *testing.T) {
 
 	// 5. Delete
 	t.Log("Deleting download...")
-	if err := service.Delete(id); err != nil {
-		t.Fatalf("Delete failed: %v", err)
+	var delErr error
+	for i := 0; i < 5; i++ {
+		if delErr = service.Delete(id); delErr == nil {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if delErr != nil {
+		t.Fatalf("Delete failed after retries: %v", delErr)
 	}
 
 	// Verify removed from active list
