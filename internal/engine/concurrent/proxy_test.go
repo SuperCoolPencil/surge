@@ -65,11 +65,8 @@ func TestConcurrentDownloader_ProxySupport(t *testing.T) {
 		ProxyURL:              proxyServer.URL,
 	}
 
-	// Create temp dir for output
-	tmpDir, cleanup, err := testutil.TempDir("proxy-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	// Create temp dir and init state
+	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
 	destPath := tmpDir + "/proxy-download.bin"
@@ -80,7 +77,7 @@ func TestConcurrentDownloader_ProxySupport(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err = downloader.Download(ctx, targetServer.URL(), nil, nil, destPath, 1024, false)
+	err := downloader.Download(ctx, targetServer.URL(), nil, nil, destPath, 1024, false)
 	if err != nil {
 		t.Fatalf("Download failed: %v", err)
 	}
@@ -109,7 +106,7 @@ func TestConcurrentDownloader_InvalidProxy(t *testing.T) {
 		ProxyURL:              "://invalid-url",
 	}
 
-	tmpDir, cleanup, _ := testutil.TempDir("proxy-fail-test")
+	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 	destPath := tmpDir + "/output.bin"
 
