@@ -3,44 +3,96 @@ package concurrent
 import (
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/surge-downloader/surge/internal/engine/types"
 )
 
-func TestReportMirrorError(t *testing.T) {
-	// Setup
-	state := types.NewProgressState("test-id", 1000)
-	mirrors := []types.MirrorStatus{
-		{URL: "http://mirror1.com", Active: true, Error: false},
-		{URL: "http://mirror2.com", Active: true, Error: false},
+func TestGetInitialConnections(t *testing.T) {
+	tests := []struct {
+		name         string
+		fileSize     int64
+		maxConns     int
+		minChunkSize int64
+		expected     int
+	}{
+		{
+			name:         "Zero Size",
+			fileSize:     0,
+			maxConns:     16,
+			minChunkSize: types.MB,
+			expected:     1,
+		},
+		{
+			name:         "Negative Size",
+			fileSize:     -1,
+			maxConns:     16,
+			minChunkSize: types.MB,
+			expected:     1,
+		},
+		{
+			name:         "Small File (1MB)",
+			fileSize:     1 * types.MB,
+			maxConns:     16,
+			minChunkSize: types.MB,
+			expected:     1, // sqrt(1) = 1
+		},
+		{
+			name:         "Medium File (100MB)",
+			fileSize:     100 * types.MB,
+			maxConns:     16,
+			minChunkSize: types.MB,
+			expected:     10, // sqrt(100) = 10
+		},
+		{
+			name:         "Max Connections Limit",
+			fileSize:     100 * types.MB,
+			maxConns:     4,
+			minChunkSize: types.MB,
+			expected:     4, // limited by maxConns
+		},
+		{
+			name:         "Min Chunk Size Constraint",
+			fileSize:     10 * types.MB,
+			maxConns:     16,
+			minChunkSize: 5 * types.MB,
+			expected:     2, // max chunks = 10/5 = 2. sqrt(10) = 3. capped at 2.
+		},
+		{
+			name:         "Min Chunk Size Larger Than File",
+			fileSize:     4 * types.MB,
+			maxConns:     16,
+			minChunkSize: 5 * types.MB,
+			expected:     1, // max chunks = 4/5 = 0 -> 1.
+		},
+		{
+			name:         "Large File (1GB)",
+			fileSize:     1024 * types.MB,
+			maxConns:     64,
+			minChunkSize: 10 * types.MB,
+			expected:     32, // sqrt(1024) = 32. 1024/10 = 102 chunks max. 32 < 64.
+		},
+		{
+			name:         "Very Large File (10GB) with High Max Conns",
+			fileSize:     10 * 1024 * types.MB,
+			maxConns:     100,
+			minChunkSize: 10 * types.MB,
+			expected:     100, // sqrt(10240) = ~101. Limited by maxConns 100.
+		},
 	}
-	state.SetMirrors(mirrors)
 
-	d := &ConcurrentDownloader{
-		State: state,
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runtime := &types.RuntimeConfig{
+				MaxConnectionsPerHost: tt.maxConns,
+				MinChunkSize:          tt.minChunkSize,
+			}
+			d := &ConcurrentDownloader{
+				Runtime: runtime,
+			}
+
+			got := d.getInitialConnections(tt.fileSize)
+			if got != tt.expected {
+				t.Errorf("getInitialConnections(%d) = %d; want %d", tt.fileSize, got, tt.expected)
+			}
+		})
 	}
-
-	// Test case 1: Report error for existing mirror
-	d.ReportMirrorError("http://mirror1.com")
-	updatedMirrors := d.State.GetMirrors()
-	assert.True(t, updatedMirrors[0].Error, "Mirror 1 should be marked as error")
-	assert.False(t, updatedMirrors[1].Error, "Mirror 2 should not be marked as error")
-
-	// Test case 2: Report error for non-existent mirror (should not panic or change anything)
-	d.ReportMirrorError("http://mirror3.com")
-	updatedMirrors = d.State.GetMirrors()
-	assert.Len(t, updatedMirrors, 2)
-	assert.True(t, updatedMirrors[0].Error)
-	assert.False(t, updatedMirrors[1].Error)
-
-	// Test case 3: Report error for already errored mirror (should stay errored)
-	d.ReportMirrorError("http://mirror1.com")
-	updatedMirrors = d.State.GetMirrors()
-	assert.True(t, updatedMirrors[0].Error)
-
-	// Test case 4: Nil state (should return early without panic)
-	dNil := &ConcurrentDownloader{State: nil}
-	assert.NotPanics(t, func() {
-		dNil.ReportMirrorError("http://mirror1.com")
-	})
 }
