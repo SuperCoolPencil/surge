@@ -218,3 +218,64 @@ func TestUpdate_DownloadRequestMsg(t *testing.T) {
 		t.Errorf("Expected no prompt state, got %v", newRoot.state)
 	}
 }
+
+func TestUpdate_ProgressTabTransition(t *testing.T) {
+	// Initialize model with one download in Queued state (Speed 0)
+	d := NewDownloadModel("test-id", "url", "file", 100)
+	d.Speed = 0
+	d.Connections = 0
+	d.done = false
+
+	m := RootModel{
+		downloads:    []*DownloadModel{d},
+		list:         NewDownloadList(100, 20),
+		activeTab:    TabQueued,
+		speedBuffer:  make([]float64, 0, 10),
+		SpeedHistory: make([]float64, 10),
+	}
+	m.UpdateListItems()
+
+	// Verify it is in the list
+	if len(m.list.Items()) != 1 {
+		t.Fatalf("Expected 1 item in Queued list, got %d", len(m.list.Items()))
+	}
+
+	// Send ProgressMsg with Speed > 0
+	msg := events.ProgressMsg{
+		DownloadID:        "test-id",
+		Downloaded:        10,
+		Total:             100,
+		Speed:             100, // Active
+		ActiveConnections: 1,
+	}
+
+	newM, _ := m.Update(msg)
+	m = newM.(RootModel)
+
+	// Verify tab switched to Active (auto-follow logic in UpdateListItems)
+	if m.activeTab != TabActive {
+		t.Errorf("Expected active tab to switch to Active (%d), got %d", TabActive, m.activeTab)
+	}
+
+	// Verify item is in the (Active) list
+	if len(m.list.Items()) != 1 {
+		t.Errorf("Expected 1 item in Active list, got %d", len(m.list.Items()))
+	}
+
+	// Now it is Active. Send ProgressMsg with Speed 0 (stalled)
+	msg.Speed = 0
+	msg.ActiveConnections = 0
+
+	newM, _ = m.Update(msg)
+	m = newM.(RootModel)
+
+	// Verify tab switched back to Queued (auto-follow logic in UpdateListItems)
+	if m.activeTab != TabQueued {
+		t.Errorf("Expected active tab to switch to Queued (%d), got %d", TabQueued, m.activeTab)
+	}
+
+	// Verify it is in Queued list
+	if len(m.list.Items()) != 1 {
+		t.Errorf("Expected 1 item in Queued list, got %d", len(m.list.Items()))
+	}
+}
