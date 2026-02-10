@@ -62,25 +62,88 @@ func SaveState(url string, destPath string, state *types.DownloadState) error {
 		}
 
 		// 2. Refresh tasks
-		// First delete existing tasks for this download
-		if _, err := tx.Exec("DELETE FROM tasks WHERE download_id = ?", state.ID); err != nil {
-			return fmt.Errorf("failed to delete old tasks: %w", err)
-		}
+		// Optimize: Use diffing instead of delete + insert
+		existingTasks := make(map[int64]struct {
+			ID     int64
+			Length int64
+		})
 
-		// Insert new tasks
-		stmt, err := tx.Prepare("INSERT INTO tasks (download_id, offset, length) VALUES (?, ?, ?)")
+		rows, err := tx.Query("SELECT id, offset, length FROM tasks WHERE download_id = ?", state.ID)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to query existing tasks: %w", err)
 		}
-		defer func() {
-			if err := stmt.Close(); err != nil {
-				utils.Debug("Error closing statement: %v", err)
-			}
-		}()
+		defer rows.Close()
 
+		// Read all existing tasks
+		for rows.Next() {
+			var id, offset, length int64
+			if err := rows.Scan(&id, &offset, &length); err != nil {
+				return err
+			}
+			existingTasks[offset] = struct {
+				ID     int64
+				Length int64
+			}{ID: id, Length: length}
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("error iterating tasks: %w", err)
+		}
+
+		var toInsert []types.Task
+		var toDeleteIDs []int64
+
+		// Identify what to keep, insert, or delete
 		for _, task := range state.Tasks {
-			if _, err := stmt.Exec(state.ID, task.Offset, task.Length); err != nil {
-				return fmt.Errorf("failed to insert task: %w", err)
+			if existing, exists := existingTasks[task.Offset]; exists {
+				if existing.Length == task.Length {
+					// Exact match, keep it
+					delete(existingTasks, task.Offset)
+					continue
+				}
+				// Length changed, treat as replace
+				toDeleteIDs = append(toDeleteIDs, existing.ID)
+				toInsert = append(toInsert, task)
+				delete(existingTasks, task.Offset)
+			} else {
+				// New task
+				toInsert = append(toInsert, task)
+			}
+		}
+
+		// Anything remaining in existingTasks should be deleted
+		for _, existing := range existingTasks {
+			toDeleteIDs = append(toDeleteIDs, existing.ID)
+		}
+
+		// Perform deletions
+		if len(toDeleteIDs) > 0 {
+			// Using a prepared statement for deletion is safer/easier than constructing a large IN clause
+			// since we are in a transaction, the overhead is minimal.
+			delStmt, err := tx.Prepare("DELETE FROM tasks WHERE id = ?")
+			if err != nil {
+				return err
+			}
+			defer delStmt.Close()
+
+			for _, id := range toDeleteIDs {
+				if _, err := delStmt.Exec(id); err != nil {
+					return fmt.Errorf("failed to delete task: %w", err)
+				}
+			}
+		}
+
+		// Perform insertions
+		if len(toInsert) > 0 {
+			insStmt, err := tx.Prepare("INSERT INTO tasks (download_id, offset, length) VALUES (?, ?, ?)")
+			if err != nil {
+				return err
+			}
+			defer insStmt.Close()
+
+			for _, task := range toInsert {
+				if _, err := insStmt.Exec(state.ID, task.Offset, task.Length); err != nil {
+					return fmt.Errorf("failed to insert task: %w", err)
+				}
 			}
 		}
 
