@@ -678,7 +678,7 @@ func handleDownload(w http.ResponseWriter, r *http.Request, defaultOutputDir str
 		return
 	}
 
-	utils.Debug("Received download request: URL=%s, Path=%s", req.URL, req.Path)
+	utils.Debug("Received download request: URL=%s, Path=%s", utils.SanitizeURL(req.URL), req.Path)
 
 	downloadID := uuid.New().String()
 	if service == nil {
@@ -748,7 +748,7 @@ func handleDownload(w http.ResponseWriter, r *http.Request, defaultOutputDir str
 		}
 	}
 
-	utils.Debug("Download request: URL=%s, SkipApproval=%v, isDuplicate=%v, isActive=%v", urlForAdd, req.SkipApproval, isDuplicate, isActive)
+	utils.Debug("Download request: URL=%s, SkipApproval=%v, isDuplicate=%v, isActive=%v", utils.SanitizeURL(urlForAdd), req.SkipApproval, isDuplicate, isActive)
 
 	// EXTENSION VETTING SHORTCUT:
 	// If SkipApproval is true, we trust the extension completely.
@@ -765,7 +765,7 @@ func handleDownload(w http.ResponseWriter, r *http.Request, defaultOutputDir str
 		// Only prompt if we have a UI running (serverProgram != nil)
 		if shouldPrompt {
 			if serverProgram != nil {
-				utils.Debug("Requesting TUI confirmation for: %s (Duplicate: %v)", req.URL, isDuplicate)
+				utils.Debug("Requesting TUI confirmation for: %s (Duplicate: %v)", utils.SanitizeURL(req.URL), isDuplicate)
 
 				// Send request to TUI
 				if err := service.Publish(events.DownloadRequestMsg{
