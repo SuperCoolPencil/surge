@@ -80,6 +80,11 @@ func uniqueFilePath(path string) string {
 
 // TUIDownload is the main entry point for TUI downloads
 func TUIDownload(ctx context.Context, cfg *types.DownloadConfig) error {
+	// Check if download was paused while in queue
+	if cfg.State != nil && cfg.State.IsPaused() {
+		return nil
+	}
+
 	// Probe server once to get all metadata
 	utils.Debug("TUIDownload: Probing server... %s", cfg.URL)
 	probe, err := engine.ProbeServer(ctx, cfg.URL, cfg.Filename, cfg.Headers)

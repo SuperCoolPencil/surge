@@ -159,10 +159,30 @@ func (p *WorkerPool) PauseAll() {
 			ids = append(ids, id)
 		}
 	}
+
+	// Also pause queued downloads
+	var queuedToPause []types.DownloadConfig
+	for _, cfg := range p.queued {
+		if cfg.State != nil {
+			queuedToPause = append(queuedToPause, cfg)
+		}
+	}
 	p.mu.RUnlock()
 
 	for _, id := range ids {
 		p.Pause(id)
+	}
+
+	for _, cfg := range queuedToPause {
+		cfg.State.Pause()
+		// Notify UI that it's paused
+		if p.progressCh != nil {
+			p.progressCh <- events.DownloadPausedMsg{
+				DownloadID: cfg.ID,
+				Filename:   cfg.Filename,
+				Downloaded: 0,
+			}
+		}
 	}
 }
 
