@@ -480,7 +480,6 @@ func TestHealthEndpoint(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "ok",
-			"port":   1700,
 		})
 	})
 
@@ -617,7 +616,9 @@ func TestStartHTTPServer_HealthEndpoint(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Test health endpoint
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port))
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/health", port), nil)
+	req.Header.Set("Authorization", "Bearer "+ensureAuthToken())
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Failed to get health: %v", err)
 	}
@@ -625,6 +626,11 @@ func TestStartHTTPServer_HealthEndpoint(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected 200, got %d", resp.StatusCode)
+	}
+
+	// Verify X-Surge-Server header is present
+	if resp.Header.Get("X-Surge-Server") != "true" {
+		t.Error("Expected X-Surge-Server header")
 	}
 
 	var result map[string]interface{}
@@ -635,8 +641,8 @@ func TestStartHTTPServer_HealthEndpoint(t *testing.T) {
 	if result["status"] != "ok" {
 		t.Error("Expected status 'ok'")
 	}
-	if int(result["port"].(float64)) != port {
-		t.Errorf("Expected port %d, got %v", port, result["port"])
+	if _, ok := result["port"]; ok {
+		t.Error("Did not expect 'port' in response")
 	}
 }
 
