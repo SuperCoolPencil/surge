@@ -53,6 +53,11 @@ func NewConcurrentDownloader(id string, progressCh chan<- any, progState *types.
 
 // getInitialConnections returns the starting number of connections based on file size
 func (d *ConcurrentDownloader) getInitialConnections(fileSize int64) int {
+	// If SequentialDownload is enabled, we strictly use 1 connection
+	if d.Runtime.SequentialDownload {
+		return 1
+	}
+
 	maxConns := d.Runtime.GetMaxConnectionsPerHost()
 	minChunkSize := d.Runtime.GetMinChunkSize() // e.g., 1MB or 5MB
 
@@ -214,10 +219,10 @@ func (d *ConcurrentDownloader) newConcurrentClient(numConns int) *http.Client {
 		TLSNextProto:       make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 
 		// Dial settings for TCP reliability
-		DialContext: (&net.Dialer{
+		DialContext: utils.SafeDialContext(&net.Dialer{
 			Timeout:   types.DialTimeout,
 			KeepAlive: types.KeepAliveDuration,
-		}).DialContext,
+		}),
 	}
 
 	return &http.Client{

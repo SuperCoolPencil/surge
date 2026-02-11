@@ -151,10 +151,12 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			}
 
 			// Resume-on-retry: update task to reflect remaining work
-			// This prevents double-counting bytes on retry
-			current := atomic.LoadInt64(&activeTask.CurrentOffset)
-			if current > task.Offset {
-				task = types.Task{Offset: current, Length: task.Offset + task.Length - current}
+			// This prevents double-counting bytes on retry and respects work stealing (StopAt)
+			if remaining := activeTask.RemainingTask(); remaining != nil {
+				task = *remaining
+			} else {
+				// Task finished or stolen completely - set length 0 to avoid requeueing old task
+				task = types.Task{Offset: atomic.LoadInt64(&activeTask.CurrentOffset), Length: 0}
 			}
 		}
 
@@ -164,11 +166,15 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 		}
 
 		if lastErr != nil {
+			if IsFatal(lastErr) {
+				return lastErr
+			}
 			// Log failed task but continue with next task
-			// If we modified StopAt we should probably reset it or push the remaining part?
-			// TODO: Could optimize by pushing only remaining part if we track that.
-			queue.Push(task)
-			utils.Debug("task at offset %d failed after %d retries: %v", task.Offset, maxRetries, lastErr)
+			// We only push back if there's remaining work
+			if task.Length > 0 {
+				queue.Push(task)
+				utils.Debug("task at offset %d failed after %d retries: %v", task.Offset, maxRetries, lastErr)
+			}
 		}
 	}
 }
@@ -220,6 +226,9 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 			return fmt.Errorf("server indicated success (200) but ignored range request (expected 206)")
 		}
 	} else if resp.StatusCode != http.StatusPartialContent {
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusForbidden {
+			return NewFatalError(fmt.Errorf("server returned %d", resp.StatusCode))
+		}
 		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
 

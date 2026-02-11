@@ -112,6 +112,7 @@ async function findSurgePort() {
     try {
       const response = await fetch(`http://127.0.0.1:${cachedPort}/health`, {
         method: "GET",
+        headers: await authHeaders(),
         signal: AbortSignal.timeout(300),
       });
       if (response.ok) {
@@ -123,6 +124,9 @@ async function findSurgePort() {
             return cachedPort;
           }
         }
+      } else if (response.status === 401 && response.headers.get("X-Surge-Server") === "true") {
+        isConnected = true;
+        return cachedPort;
       }
     } catch {}
     cachedPort = null;
@@ -133,6 +137,7 @@ async function findSurgePort() {
     try {
       const response = await fetch(`http://127.0.0.1:${port}/health`, {
         method: "GET",
+        headers: await authHeaders(),
         signal: AbortSignal.timeout(200),
       });
       if (response.ok) {
@@ -147,6 +152,11 @@ async function findSurgePort() {
         cachedPort = port;
         isConnected = true;
         console.log(`[Surge] Found server on port ${port}`);
+        return port;
+      } else if (response.status === 401 && response.headers.get("X-Surge-Server") === "true") {
+        cachedPort = port;
+        isConnected = true;
+        console.log(`[Surge] Found server on port ${port} (auth required)`);
         return port;
       }
     } catch {}

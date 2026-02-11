@@ -368,12 +368,11 @@ func startHTTPServer(ln net.Listener, port int, defaultOutputDir string, service
 
 	mux := http.NewServeMux()
 
-	// Health check endpoint (Public)
+	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "ok",
-			"port":   port,
 		}); err != nil {
 			utils.Debug("Failed to encode response: %v", err)
 		}
@@ -385,7 +384,7 @@ func startHTTPServer(ln net.Listener, port int, defaultOutputDir string, service
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// Access-Control-Allow-Origin handled by corsMiddleware
 
 		// Get event stream
 		stream, cleanup, err := service.StreamEvents(r.Context())
@@ -486,6 +485,24 @@ func startHTTPServer(ln net.Listener, port int, defaultOutputDir string, service
 		}
 	})
 
+	// Pause All endpoint (Protected)
+	mux.HandleFunc("/pause-all", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		if err := service.PauseAll(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "paused_all"}); err != nil {
+			utils.Debug("Failed to encode response: %v", err)
+		}
+	})
+
 	// Resume endpoint (Protected)
 	mux.HandleFunc("/resume", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -582,9 +599,14 @@ func startHTTPServer(ln net.Listener, port int, defaultOutputDir string, service
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Set CORS headers
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if checkOrigin(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS, PUT, PATCH")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+		w.Header().Set("X-Surge-Server", "true")
 
 		// Handle preflight requests
 		if r.Method == "OPTIONS" {
@@ -596,14 +618,28 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func checkOrigin(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	// Allow browser extensions
+	if strings.HasPrefix(origin, "chrome-extension://") ||
+		strings.HasPrefix(origin, "moz-extension://") ||
+		strings.HasPrefix(origin, "safari-web-extension://") {
+		return true
+	}
+	// Allow local development/web UI
+	if origin == "http://localhost" || strings.HasPrefix(origin, "http://localhost:") {
+		return true
+	}
+	if origin == "http://127.0.0.1" || strings.HasPrefix(origin, "http://127.0.0.1:") {
+		return true
+	}
+	return false
+}
+
 func authMiddleware(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Allow health check without auth
-		if r.URL.Path == "/health" {
-			next.ServeHTTP(w, r)
-			return
-		}
-
 		// Allow OPTIONS for CORS preflight
 		if r.Method == "OPTIONS" {
 			next.ServeHTTP(w, r)
@@ -717,7 +753,7 @@ func handleDownload(w http.ResponseWriter, r *http.Request, defaultOutputDir str
 		return
 	}
 
-	utils.Debug("Received download request: URL=%s, Path=%s", req.URL, req.Path)
+	utils.Debug("Received download request: URL=%s, Path=%s", utils.SanitizeURL(req.URL), req.Path)
 
 	downloadID := uuid.New().String()
 	if service == nil {
@@ -725,45 +761,42 @@ func handleDownload(w http.ResponseWriter, r *http.Request, defaultOutputDir str
 		return
 	}
 
-	// Prepare output path
-	outPath := req.Path
-	if req.RelativeToDefaultDir && req.Path != "" {
-		// Resolve relative to default download directory
-		baseDir := settings.General.DefaultDownloadDir
-		if baseDir == "" {
-			baseDir = defaultOutputDir
-		}
-		if baseDir == "" {
-			baseDir = "."
-		}
-		outPath = filepath.Join(baseDir, req.Path)
-		if err := os.MkdirAll(outPath, 0o755); err != nil {
-			http.Error(w, "Failed to create directory: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
+	// Resolve base directory
+	baseDir := settings.General.DefaultDownloadDir
+	if baseDir == "" {
+		baseDir = defaultOutputDir
+	}
+	if baseDir == "" {
+		baseDir = "."
+	}
+	baseDir = utils.EnsureAbsPath(baseDir)
 
-	} else if outPath == "" {
-		if defaultOutputDir != "" {
-			outPath = defaultOutputDir
-			if err := os.MkdirAll(outPath, 0o755); err != nil {
-				http.Error(w, "Failed to create output directory: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-		} else {
-			if settings.General.DefaultDownloadDir != "" {
-				outPath = settings.General.DefaultDownloadDir
-				if err := os.MkdirAll(outPath, 0o755); err != nil {
-					http.Error(w, "Failed to create output directory: "+err.Error(), http.StatusInternalServerError)
-					return
-				}
-			} else {
-				outPath = "."
-			}
-		}
+	// Prepare output path
+	var outPath string
+	if req.RelativeToDefaultDir && req.Path != "" {
+		outPath = filepath.Join(baseDir, req.Path)
+	} else if req.Path != "" {
+		outPath = req.Path
+	} else {
+		outPath = baseDir
 	}
 
 	// Enforce absolute path to ensure resume works even if CWD changes
 	outPath = utils.EnsureAbsPath(outPath)
+
+	// SECURITY: Ensure the download directory is within the base directory
+	// This prevents arbitrary file writes via the API
+	rel, err := filepath.Rel(baseDir, outPath)
+	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		http.Error(w, "Invalid path: download path must be within the default download directory", http.StatusForbidden)
+		return
+	}
+
+	// Create directory
+	if err := os.MkdirAll(outPath, 0o755); err != nil {
+		http.Error(w, "Failed to create directory: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	// Check settings for extension prompt and duplicates
 	// Logic modified to distinguish between ACTIVE (corruption risk) and COMPLETED (overwrite safe)
@@ -790,7 +823,7 @@ func handleDownload(w http.ResponseWriter, r *http.Request, defaultOutputDir str
 		}
 	}
 
-	utils.Debug("Download request: URL=%s, SkipApproval=%v, isDuplicate=%v, isActive=%v", urlForAdd, req.SkipApproval, isDuplicate, isActive)
+	utils.Debug("Download request: URL=%s, SkipApproval=%v, isDuplicate=%v, isActive=%v", utils.SanitizeURL(urlForAdd), req.SkipApproval, isDuplicate, isActive)
 
 	// EXTENSION VETTING SHORTCUT:
 	// If SkipApproval is true, we trust the extension completely.
@@ -807,7 +840,7 @@ func handleDownload(w http.ResponseWriter, r *http.Request, defaultOutputDir str
 		// Only prompt if we have a UI running (serverProgram != nil)
 		if shouldPrompt {
 			if serverProgram != nil {
-				utils.Debug("Requesting TUI confirmation for: %s (Duplicate: %v)", req.URL, isDuplicate)
+				utils.Debug("Requesting TUI confirmation for: %s (Duplicate: %v)", utils.SanitizeURL(req.URL), isDuplicate)
 
 				// Send request to TUI
 				if err := service.Publish(events.DownloadRequestMsg{

@@ -22,6 +22,9 @@ type DownloadService interface {
 	// Pause pauses an active download.
 	Pause(id string) error
 
+	// PauseAll pauses all active downloads.
+	PauseAll() error
+
 	// Resume resumes a paused download.
 	Resume(id string) error
 

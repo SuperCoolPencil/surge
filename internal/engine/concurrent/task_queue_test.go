@@ -87,26 +87,47 @@ func TestTaskQueue_DrainRemaining(t *testing.T) {
 
 func TestAlignedSplitSize(t *testing.T) {
 	tests := []struct {
+		name      string
 		remaining int64
-		wantZero  bool
+		wantSize  int64
 	}{
-		{types.MinChunk, true},       // Too small to split (half < MinChunk)
-		{2 * types.MinChunk, false},  // Half is MinChunk, valid split
-		{4 * types.MinChunk, false},  // Should produce valid split
-		{10 * types.MinChunk, false}, // Should produce valid split
+		{
+			name:      "Too small (< MinChunk)",
+			remaining: types.MinChunk,
+			wantSize:  0,
+		},
+		{
+			name:      "Exact min split",
+			remaining: 2 * types.MinChunk,
+			wantSize:  types.MinChunk,
+		},
+		{
+			name:      "Larger split",
+			remaining: 4 * types.MinChunk,
+			wantSize:  2 * types.MinChunk,
+		},
+		{
+			name:      "Odd split (aligns down)",
+			remaining: 2*types.MinChunk + types.AlignSize,
+			wantSize:  types.MinChunk,
+		},
+		{
+			name:      "Odd split (aligns up)",
+			remaining: 2*types.MinChunk + 2*types.AlignSize,
+			wantSize:  types.MinChunk + types.AlignSize,
+		},
 	}
 
 	for _, tt := range tests {
-		got := alignedSplitSize(tt.remaining)
-		if tt.wantZero && got != 0 {
-			t.Errorf("alignedSplitSize(%d) = %d, want 0", tt.remaining, got)
-		}
-		if !tt.wantZero && got == 0 {
-			t.Errorf("alignedSplitSize(%d) = 0, want non-zero", tt.remaining)
-		}
-		// Verify alignment
-		if got != 0 && got%types.AlignSize != 0 {
-			t.Errorf("alignedSplitSize(%d) = %d, not aligned to %d", tt.remaining, got, types.AlignSize)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			got := alignedSplitSize(tt.remaining)
+			if got != tt.wantSize {
+				t.Errorf("alignedSplitSize(%d) = %d, want %d", tt.remaining, got, tt.wantSize)
+			}
+			// Verify alignment
+			if got != 0 && got%types.AlignSize != 0 {
+				t.Errorf("alignedSplitSize(%d) = %d, not aligned to %d", tt.remaining, got, types.AlignSize)
+			}
+		})
 	}
 }

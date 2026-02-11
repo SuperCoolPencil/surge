@@ -11,6 +11,12 @@ import (
 	"github.com/surge-downloader/surge/internal/testutil"
 )
 
+func TestMain(m *testing.M) {
+	// Allow private IPs for tests as we use localhost
+	os.Setenv("SURGE_ALLOW_PRIVATE_IPS", "true")
+	os.Exit(m.Run())
+}
+
 func TestCopyFile(t *testing.T) {
 	tmpDir, cleanup, err := testutil.TempDir("surge-copy-test")
 	if err != nil {

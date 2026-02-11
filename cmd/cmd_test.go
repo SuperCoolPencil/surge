@@ -140,10 +140,12 @@ func TestCorsMiddleware_SetsCORSHeaders(t *testing.T) {
 	corsHandler := corsMiddleware(handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	origin := "chrome-extension://exampleid"
+	req.Header.Set("Origin", origin)
 	rec := httptest.NewRecorder()
 	corsHandler.ServeHTTP(rec, req)
 
-	if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+	if rec.Header().Get("Access-Control-Allow-Origin") != origin {
 		t.Error("CORS headers should be set for extension support")
 	}
 }
@@ -557,7 +559,6 @@ func TestHealthEndpoint(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "ok",
-			"port":   1700,
 		})
 	})
 
@@ -694,7 +695,9 @@ func TestStartHTTPServer_HealthEndpoint(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Test health endpoint
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port))
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/health", port), nil)
+	req.Header.Set("Authorization", "Bearer "+ensureAuthToken())
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Failed to get health: %v", err)
 	}
@@ -702,6 +705,11 @@ func TestStartHTTPServer_HealthEndpoint(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected 200, got %d", resp.StatusCode)
+	}
+
+	// Verify X-Surge-Server header is present
+	if resp.Header.Get("X-Surge-Server") != "true" {
+		t.Error("Expected X-Surge-Server header")
 	}
 
 	var result map[string]interface{}
@@ -712,8 +720,8 @@ func TestStartHTTPServer_HealthEndpoint(t *testing.T) {
 	if result["status"] != "ok" {
 		t.Error("Expected status 'ok'")
 	}
-	if int(result["port"].(float64)) != port {
-		t.Errorf("Expected port %d, got %v", port, result["port"])
+	if _, ok := result["port"]; ok {
+		t.Error("Did not expect 'port' in response")
 	}
 }
 
@@ -729,13 +737,17 @@ func TestStartHTTPServer_HasCORSHeaders(t *testing.T) {
 	go startHTTPServer(ln, port, "", svc)
 	time.Sleep(50 * time.Millisecond)
 
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port))
+	req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/health", port), nil)
+	origin := "chrome-extension://test"
+	req.Header.Set("Origin", origin)
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.Header.Get("Access-Control-Allow-Origin") != "*" {
+	if resp.Header.Get("Access-Control-Allow-Origin") != origin {
 		t.Error("CORS headers should be set for extension support")
 	}
 }
@@ -968,10 +980,12 @@ func TestCorsMiddleware_AllMethods(t *testing.T) {
 	methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH"}
 	for _, method := range methods {
 		req := httptest.NewRequest(method, "/test", nil)
+		origin := "moz-extension://test"
+		req.Header.Set("Origin", origin)
 		rec := httptest.NewRecorder()
 		corsHandler.ServeHTTP(rec, req)
 
-		if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+		if rec.Header().Get("Access-Control-Allow-Origin") != origin {
 			t.Errorf("CORS header should be set for %s (required for extension support)", method)
 		}
 	}

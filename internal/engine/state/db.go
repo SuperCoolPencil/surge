@@ -77,11 +77,40 @@ func initDB() error {
 	}
 
 	// Migration: Add mirrors column if not exists
-	_, _ = db.Exec("ALTER TABLE downloads ADD COLUMN mirrors TEXT")
+	if err := addColumnIfNotExists(db, "downloads", "mirrors", "TEXT"); err != nil {
+		return fmt.Errorf("migration failed (mirrors): %w", err)
+	}
 
 	// Migration: Add chunk bitmap columns
-	_, _ = db.Exec("ALTER TABLE downloads ADD COLUMN chunk_bitmap BLOB")
-	_, _ = db.Exec("ALTER TABLE downloads ADD COLUMN actual_chunk_size INTEGER")
+	if err := addColumnIfNotExists(db, "downloads", "chunk_bitmap", "BLOB"); err != nil {
+		return fmt.Errorf("migration failed (chunk_bitmap): %w", err)
+	}
+	if err := addColumnIfNotExists(db, "downloads", "actual_chunk_size", "INTEGER"); err != nil {
+		return fmt.Errorf("migration failed (actual_chunk_size): %w", err)
+	}
+
+	return nil
+}
+
+// addColumnIfNotExists adds a column to a table if it does not already exist
+func addColumnIfNotExists(db *sql.DB, tableName, columnName, columnType string) error {
+	var count int
+	// Check if column exists using pragma_table_info
+	query := fmt.Sprintf("SELECT count(*) FROM pragma_table_info('%s') WHERE name = ?", tableName)
+	err := db.QueryRow(query, columnName).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check column existence: %w", err)
+	}
+
+	if count > 0 {
+		return nil // Column already exists
+	}
+
+	// Add column
+	alterQuery := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", tableName, columnName, columnType)
+	if _, err := db.Exec(alterQuery); err != nil {
+		return fmt.Errorf("failed to add column: %w", err)
+	}
 
 	return nil
 }

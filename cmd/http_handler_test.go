@@ -62,24 +62,25 @@ func TestHandleDownload_PathResolution(t *testing.T) {
 		request              DownloadRequest
 		expectedPathSuffix   string
 		expectedPathAbsolute bool
+		expectedStatus       int
 	}{
 		{
-			name: "Absolute Path (Explicit)",
+			name: "Absolute Path (Inside BaseDir)",
 			request: DownloadRequest{
 				URL:  "http://example.com/file1",
-				Path: filepath.Join(tempDir, "absolute"),
+				Path: filepath.Join(defaultDownloadDir, "absolute"),
 			},
 			expectedPathSuffix:   "absolute",
 			expectedPathAbsolute: true,
+			expectedStatus:       http.StatusOK,
 		},
 		{
-			name: "Relative Path (No Flag)",
+			name: "Absolute Path (Outside BaseDir - Rejected)",
 			request: DownloadRequest{
 				URL:  "http://example.com/file2",
-				Path: "relative",
+				Path: filepath.Join(tempDir, "outside"), // tempDir is parent of Downloads
 			},
-			expectedPathSuffix:   "relative",
-			expectedPathAbsolute: true,
+			expectedStatus: http.StatusForbidden,
 		},
 		{
 			name: "Relative to Default Dir",
@@ -90,6 +91,7 @@ func TestHandleDownload_PathResolution(t *testing.T) {
 			},
 			expectedPathSuffix:   filepath.Join(filepath.Base(defaultDownloadDir), "subdir"),
 			expectedPathAbsolute: true,
+			expectedStatus:       http.StatusOK,
 		},
 		{
 			name: "Nested Relative to Default Dir",
@@ -100,6 +102,7 @@ func TestHandleDownload_PathResolution(t *testing.T) {
 			},
 			expectedPathSuffix:   filepath.Join(filepath.Base(defaultDownloadDir), "nested", "deep"),
 			expectedPathAbsolute: true,
+			expectedStatus:       http.StatusOK,
 		},
 		{
 			name: "Empty Path (Default)",
@@ -109,6 +112,7 @@ func TestHandleDownload_PathResolution(t *testing.T) {
 			},
 			expectedPathSuffix:   filepath.Base(defaultDownloadDir), // Should be just the default dir
 			expectedPathAbsolute: true,
+			expectedStatus:       http.StatusOK,
 		},
 	}
 
@@ -123,8 +127,16 @@ func TestHandleDownload_PathResolution(t *testing.T) {
 			// it should prioritize settings.General.DefaultDownloadDir
 			handleDownload(w, req, defaultDownloadDir, svc)
 
-			if w.Code != http.StatusOK && w.Code != http.StatusConflict {
-				t.Errorf("Expected OK, got %d. Body: %s", w.Code, w.Body.String())
+			if tt.expectedStatus != 0 && w.Code != tt.expectedStatus {
+				if tt.expectedStatus == http.StatusOK && w.Code == http.StatusConflict {
+					// Accept conflict (duplicate) if expected OK
+				} else {
+					t.Errorf("Expected status %d, got %d. Body: %s", tt.expectedStatus, w.Code, w.Body.String())
+				}
+			}
+
+			if tt.expectedStatus != http.StatusOK && tt.expectedStatus != http.StatusAccepted {
+				return // Don't check queue for failed requests
 			}
 
 			// GlobalPool access
