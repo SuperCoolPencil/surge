@@ -67,20 +67,53 @@ func SaveState(url string, destPath string, state *types.DownloadState) error {
 			return fmt.Errorf("failed to delete old tasks: %w", err)
 		}
 
-		// Insert new tasks
-		stmt, err := tx.Prepare("INSERT INTO tasks (download_id, offset, length) VALUES (?, ?, ?)")
-		if err != nil {
-			return err
-		}
-		defer func() {
-			if err := stmt.Close(); err != nil {
-				utils.Debug("Error closing statement: %v", err)
-			}
-		}()
+		// Insert new tasks using batch insert
+		// SQLite limit is often 999 or 32766 params. Safe batch size: 50 tasks * 3 params = 150 params.
+		const batchSize = 50
+		tasks := state.Tasks
+		numTasks := len(tasks)
 
-		for _, task := range state.Tasks {
-			if _, err := stmt.Exec(state.ID, task.Offset, task.Length); err != nil {
-				return fmt.Errorf("failed to insert task: %w", err)
+		if numTasks > 0 {
+			// Prepare statement for full batches
+			placeholders := strings.Repeat("(?, ?, ?),", batchSize)
+			placeholders = placeholders[:len(placeholders)-1] // remove trailing comma
+			stmt, err := tx.Prepare("INSERT INTO tasks (download_id, offset, length) VALUES " + placeholders)
+			if err != nil {
+				return fmt.Errorf("failed to prepare batch insert: %w", err)
+			}
+			defer func() { _ = stmt.Close() }()
+
+			for i := 0; i < numTasks; i += batchSize {
+				end := i + batchSize
+				if end > numTasks {
+					// Last batch (partial)
+					end = numTasks
+					batch := tasks[i:end]
+
+					var q strings.Builder
+					q.WriteString("INSERT INTO tasks (download_id, offset, length) VALUES ")
+					args := make([]interface{}, 0, len(batch)*3)
+					for j, task := range batch {
+						if j > 0 {
+							q.WriteString(",")
+						}
+						q.WriteString("(?, ?, ?)")
+						args = append(args, state.ID, task.Offset, task.Length)
+					}
+					if _, err := tx.Exec(q.String(), args...); err != nil {
+						return fmt.Errorf("failed to insert partial batch: %w", err)
+					}
+				} else {
+					// Full batch
+					batch := tasks[i:end]
+					args := make([]interface{}, 0, batchSize*3)
+					for _, task := range batch {
+						args = append(args, state.ID, task.Offset, task.Length)
+					}
+					if _, err := stmt.Exec(args...); err != nil {
+						return fmt.Errorf("failed to insert tasks batch: %w", err)
+					}
+				}
 			}
 		}
 
@@ -467,4 +500,104 @@ func RemoveCompletedDownloads() (int64, error) {
 
 	count, _ := result.RowsAffected()
 	return count, nil
+}
+
+// LoadStates loads multiple download states from SQLite in batch
+func LoadStates(ids []string) (map[string]*types.DownloadState, error) {
+	if len(ids) == 0 {
+		return make(map[string]*types.DownloadState), nil
+	}
+
+	db := getDBHelper()
+	if db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+
+	// Prepare IN clause placeholders
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	inClause := strings.Join(placeholders, ",")
+
+	// 1. Load Downloads
+	query := fmt.Sprintf(`
+		SELECT id, url, dest_path, filename, total_size, downloaded, url_hash, created_at, paused_at, time_taken, mirrors, chunk_bitmap, actual_chunk_size
+		FROM downloads
+		WHERE id IN (%s) AND status != 'completed'
+	`, inClause)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query downloads batch: %w", err)
+	}
+
+	states := make(map[string]*types.DownloadState)
+
+	defer func() {
+		if err := rows.Close(); err != nil {
+			utils.Debug("Error closing rows: %v", err)
+		}
+	}()
+
+	for rows.Next() {
+		var state types.DownloadState
+		var timeTaken, createdAt, pausedAt, actualChunkSize sql.NullInt64
+		var mirrors sql.NullString
+		var chunkBitmap []byte
+
+		if err := rows.Scan(
+			&state.ID, &state.URL, &state.DestPath, &state.Filename,
+			&state.TotalSize, &state.Downloaded, &state.URLHash,
+			&createdAt, &pausedAt, &timeTaken, &mirrors, &chunkBitmap, &actualChunkSize,
+		); err != nil {
+			return nil, err
+		}
+
+		if createdAt.Valid {
+			state.CreatedAt = createdAt.Int64
+		}
+		if pausedAt.Valid {
+			state.PausedAt = pausedAt.Int64
+		}
+		if timeTaken.Valid {
+			state.Elapsed = timeTaken.Int64 * 1e6
+		}
+		if mirrors.Valid && mirrors.String != "" {
+			state.Mirrors = strings.Split(mirrors.String, ",")
+		}
+		if actualChunkSize.Valid {
+			state.ActualChunkSize = actualChunkSize.Int64
+		}
+		state.ChunkBitmap = chunkBitmap
+
+		states[state.ID] = &state
+	}
+
+	// 2. Load Tasks for all these downloads
+	taskQuery := fmt.Sprintf(`SELECT download_id, offset, length FROM tasks WHERE download_id IN (%s)`, inClause)
+	taskRows, err := db.Query(taskQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query tasks batch: %w", err)
+	}
+	defer func() {
+		if err := taskRows.Close(); err != nil {
+			utils.Debug("Error closing task rows: %v", err)
+		}
+	}()
+
+	for taskRows.Next() {
+		var downloadID string
+		var t types.Task
+		if err := taskRows.Scan(&downloadID, &t.Offset, &t.Length); err != nil {
+			return nil, err
+		}
+		if s, ok := states[downloadID]; ok {
+			s.Tasks = append(s.Tasks, t)
+		}
+	}
+
+	return states, nil
 }

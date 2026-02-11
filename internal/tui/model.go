@@ -45,14 +45,15 @@ const (
 )
 
 type DownloadModel struct {
-	ID          string
-	URL         string
-	Filename    string
-	Destination string // Full path to the destination file
-	Total       int64
-	Downloaded  int64
-	Speed       float64
-	Connections int
+	ID            string
+	URL           string
+	Filename      string
+	FilenameLower string
+	Destination   string // Full path to the destination file
+	Total         int64
+	Downloaded    int64
+	Speed         float64
+	Connections   int
 
 	StartTime time.Time
 	Elapsed   time.Duration
@@ -153,13 +154,14 @@ func NewDownloadModel(id string, url string, filename string, total int64) *Down
 	// Create dummy state container for compatibility if needed
 	state := types.NewProgressState(id, total)
 	return &DownloadModel{
-		ID:        id,
-		URL:       url,
-		Filename:  filename,
-		Total:     total,
-		StartTime: time.Now(),
-		progress:  progress.New(progress.WithSpringOptions(0.5, 0.1)),
-		state:     state,
+		ID:            id,
+		URL:           url,
+		Filename:      filename,
+		FilenameLower: strings.ToLower(filename),
+		Total:         total,
+		StartTime:     time.Now(),
+		progress:      progress.New(progress.WithSpringOptions(0.5, 0.1)),
+		state:         state,
 	}
 }
 
@@ -320,14 +322,30 @@ func (m RootModel) Init() tea.Cmd {
 	}
 
 	// Async resume of downloads
+	var resumeIDs []string
 	for _, d := range m.downloads {
 		if d.pendingResume {
-			id := d.ID
-			cmds = append(cmds, func() tea.Msg {
-				err := m.Service.Resume(id)
-				return resumeResultMsg{id: id, err: err}
-			})
+			resumeIDs = append(resumeIDs, d.ID)
 		}
+	}
+
+	if len(resumeIDs) > 0 {
+		cmds = append(cmds, func() tea.Msg {
+			errs := m.Service.ResumeBatch(resumeIDs)
+
+			// Dispatch individual messages for UI updates
+			var batch []tea.Cmd
+			for i, id := range resumeIDs {
+				err := errs[i]
+				// Capture for closure
+				currentID := id
+				currentErr := err
+				batch = append(batch, func() tea.Msg {
+					return resumeResultMsg{id: currentID, err: currentErr}
+				})
+			}
+			return tea.Batch(batch...)()
+		})
 	}
 
 	return tea.Batch(cmds...)
@@ -362,7 +380,7 @@ func (m RootModel) getFilteredDownloads() []*DownloadModel {
 
 		// Apply search filter if query is set
 		if m.searchQuery != "" {
-			if !strings.Contains(strings.ToLower(d.Filename), searchLower) {
+			if !strings.Contains(strings.ToLower(d.FilenameLower), searchLower) {
 				continue
 			}
 		}
