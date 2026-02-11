@@ -16,11 +16,11 @@ func TestChunkAccuracy(t *testing.T) {
 	// Simulate downloading a small part of the first chunk (e.g. 1KB)
 	// UpdateChunkStatus(offset=0, length=1024, status=ChunkCompleted)
 	// Update first 500KB (half of first chunk)
-	state.UpdateChunkStatus(0, 500*1024, types.ChunkDownloading)
+	state.UpdateChunkStatus(0, 500*1024, types.ChunkCompleted)
 
 	// Verify
 	if state.GetChunkState(0) != types.ChunkDownloading {
-		t.Errorf("Expected chunk 0 to be Downloading")
+		t.Errorf("Expected chunk 0 to be Downloading (got %v)", state.GetChunkState(0))
 	}
 
 	// Calculate percentage
