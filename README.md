@@ -23,6 +23,12 @@ Surge is designed for power users who prefer a keyboard-driven workflow. It feat
 
 ![Surge Demo](assets/demo.gif)
 
+## Backstory
+
+We are two college students who maintain this project. We suffered from terrible college internet and desperately wanted something that downloads files as fast as physically possible.
+
+The existing options were lacking: XDM is no longer maintained, and IDM is closed-source and paid. So, we built Surge—an open-source, high-performance download manager that squeezes every bit of bandwidth out of your connection.
+
 ## Why use Surge?
 
 Most browsers open a single connection for a download. Surge opens multiple (up to 32), splits the file, and downloads chunks in parallel. But we take it a step further:
@@ -38,33 +44,15 @@ Most browsers open a single connection for a download. Surge opens multiple (up 
 
 ## Installation
 
-### Option 1: Prebuilt Binaries (Easiest)
+Surge is available on multiple platforms. Choose the method that works best for you.
 
-Download the latest binary for your OS from the [Releases Page](https://github.com/surge-downloader/surge/releases/latest).
-
-### Option 2: Install with AUR
-
-```bash
-yay -S surge
-```
-
-### Option 3: Homebrew (macOS/Linux)
-
-```bash
-brew install surge-downloader/tap/surge
-```
-
-### Option 4: Go Install
-
-```bash
-go install github.com/surge-downloader/surge@latest
-```
-
-### Option 5: winget (Windows)
-
-```bash
-winget install surge-downloader.surge
-```
+| Platform / Method | Command / Instructions | Notes |
+| :--- | :--- | :--- |
+| **Prebuilt Binary** | [Download from Releases](https://github.com/surge-downloader/surge/releases/latest) | Easiest method. Just download and run. |
+| **Arch Linux (AUR)** | `yay -S surge` | Managed via AUR. |
+| **macOS / Linux (Homebrew)** | `brew install surge-downloader/tap/surge` | Recommended for Mac/Linux users. |
+| **Windows (Winget)** | `winget install surge-downloader.surge` | Recommended for Windows users. |
+| **Go Install** | `go install github.com/surge-downloader/surge@latest` | Requires Go 1.21+. |
 
 ---
 
@@ -72,9 +60,11 @@ winget install surge-downloader.surge
 
 Surge has two main modes: **TUI (Interactive)** and **Server (Headless)**.
 
+For a comprehensive list of all commands, flags, and configuration options, please refer to the **[Detailed Settings & Configuration Guide](docs/SETTINGS.md)**.
+
 ### 1. Interactive TUI Mode
 
-Just run `surge` to enter the dashboard. This is where you can visualize progress, manage the queue, and see the speed graphs.
+Just run `surge` to enter the dashboard. This is where you can visualize progress, manage the queue, and see speed graphs.
 
 ```bash
 # Start the TUI
@@ -83,17 +73,8 @@ surge
 # Start TUI with downloads queued
 surge https://example.com/file1.zip https://example.com/file2.zip
 
-# Start with multiple mirrors (comma-separated or multiple arguments)
-surge https://mirror1.com/file.zip,https://mirror2.com/file.zip
-
 # Combine URLs and batch file
 surge https://example.com/file.zip --batch urls.txt
-
-# Start without resuming paused downloads
-surge --no-resume
-
-# Auto-exit when all downloads complete
-surge https://example.com/file.zip --exit-when-done
 ```
 
 ### 2. Server Mode (Headless)
@@ -105,52 +86,23 @@ Great for servers, Raspberry Pis, or background processes.
 surge server start
 
 # Start the server with a download
-surge server start https://url.com/file.zip,https://mirror1.com/file.zip,https://mirror2.com/file.zip
-
-# Start on a specific port with options
-surge server start --port 8090 --no-resume
+surge server start https://url.com/file.zip
 
 # Check server status
 surge server status
-
-# Stop the server
-surge server stop
 ```
 
-### 3. Remote TUI (Connect to a Daemon)
+### 3. Remote TUI
 
-Use this when Surge is running on another machine (or a local daemon you started with `surge server start`).
+Connect to a running Surge daemon (local or remote).
 
 ```bash
-# Connect to a local daemon (auto-discovery via ~/.surge/port)
+# Connect to a local daemon (auto-discovery)
 surge connect
 
 # Connect to a remote daemon
 surge connect 192.168.1.10:1700 --token <token>
-
-# Or set the token once in the environment
-export SURGE_TOKEN=<token>
-surge connect 192.168.1.10:1700
 ```
-
-Notes:
-
-- The daemon requires a token for all API calls. Print it with `surge token` on the server host.
-- Remote TUI is a viewer/controller for the daemon state; the daemon owns resume behavior.
-
-### 3. Command Reference
-
-All other commands can be used to interact with a running Surge instance (TUI or Server).
-
-| Command  | Alias  | Description                 | Usage Examples                                        |
-| :------- | :----- | :-------------------------- | :---------------------------------------------------- |
-| `add`    | `get`  | Add a download to the queue | `surge add <url>`<br>`surge add --batch urls.txt`     |
-| `ls`     | `l`    | List all downloads          | `surge ls`<br>`surge ls --watch`<br>`surge ls --json` |
-| `pause`  | -      | Pause a download            | `surge pause <id>`<br>`surge pause --all`             |
-| `resume` | -      | Resume a download           | `surge resume <id>`<br>`surge resume --all`           |
-| `rm`     | `kill` | Remove/Cancel a download    | `surge rm <id>`<br>`surge rm --clean`                 |
-
-> **Note:** IDs can be partial (e.g., first 4-8 characters) as long as they are unique.
 
 ---
 
