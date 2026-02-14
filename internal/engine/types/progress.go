@@ -199,6 +199,26 @@ func (ps *ProgressState) RestoreBitmap(bitmap []byte, actualChunkSize int64) {
 	if len(ps.ChunkProgress) != numChunks {
 		ps.ChunkProgress = make([]int64, numChunks)
 	}
+
+	// Populate ChunkProgress from Bitmap (best effort until RecalculateProgress)
+	for i := 0; i < numChunks; i++ {
+		byteIndex := i / 4
+		bitOffset := (i % 4) * 2
+		if byteIndex < len(bitmap) {
+			val := (bitmap[byteIndex] >> bitOffset) & 3
+			if ChunkStatus(val) == ChunkCompleted {
+				chunkStart := int64(i) * ps.ActualChunkSize
+				chunkEnd := chunkStart + ps.ActualChunkSize
+				if chunkEnd > ps.TotalSize {
+					chunkEnd = ps.TotalSize
+				}
+				ps.ChunkProgress[i] = chunkEnd - chunkStart
+			} else if ChunkStatus(val) == ChunkDownloading {
+				// We don't know exact progress, but mark as active > 0
+				ps.ChunkProgress[i] = 1
+			}
+		}
+	}
 }
 
 // SetChunkProgress updates chunk progress array from external sources (e.g. remote events).
@@ -235,48 +255,77 @@ func (ps *ProgressState) SetChunkState(index int, status ChunkStatus) {
 }
 
 // GetChunkState gets the 2-bit state for a specific chunk index
+// Calculated dynamically from ChunkProgress to be lock-free compatible
 func (ps *ProgressState) GetChunkState(index int) ChunkStatus {
-	if index < 0 || index >= ps.BitmapWidth {
+	if index < 0 || index >= ps.BitmapWidth || index >= len(ps.ChunkProgress) {
 		return ChunkPending
 	}
 
-	byteIndex := index / 4
-	bitOffset := (index % 4) * 2
+	// Atomic load progress
+	progress := atomic.LoadInt64(&ps.ChunkProgress[index])
 
-	val := (ps.ChunkBitmap[byteIndex] >> bitOffset) & 3
-	return ChunkStatus(val)
+	// Determine state
+	chunkStart := int64(index) * ps.ActualChunkSize
+	chunkEnd := chunkStart + ps.ActualChunkSize
+	if chunkEnd > ps.TotalSize {
+		chunkEnd = ps.TotalSize
+	}
+	chunkSize := chunkEnd - chunkStart
+
+	if progress >= chunkSize {
+		return ChunkCompleted
+	}
+	if progress > 0 {
+		return ChunkDownloading
+	}
+	return ChunkPending
 }
 
 // UpdateChunkStatus updates the bitmap based on byte range
+// Optimized to be lock-free for common progress updates.
 func (ps *ProgressState) UpdateChunkStatus(offset, length int64, status ChunkStatus) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
+	// Optimization: Skip locking if only adding bytes (common path)
+	// We rely on atomic operations on ChunkProgress array.
 
-	if ps.ActualChunkSize == 0 || len(ps.ChunkBitmap) == 0 {
-		utils.Debug("UpdateChunkStatus skipped: ActualChunkSize=%d, BitmapLen=%d", ps.ActualChunkSize, len(ps.ChunkBitmap))
+	// Read fields that are constant during download (ActualChunkSize, BitmapWidth)
+	// We assume they are initialized before download starts.
+	chunkSize := ps.ActualChunkSize
+	width := ps.BitmapWidth
+
+	if chunkSize == 0 || width == 0 {
+		// Fallback to lock if potentially uninitialized (though unlikely during download)
+		ps.mu.Lock()
+		if ps.ActualChunkSize == 0 || len(ps.ChunkBitmap) == 0 {
+			ps.mu.Unlock()
+			utils.Debug("UpdateChunkStatus skipped: ActualChunkSize=%d, BitmapLen=%d", ps.ActualChunkSize, len(ps.ChunkBitmap))
+			return
+		}
+		chunkSize = ps.ActualChunkSize
+		width = ps.BitmapWidth
+		ps.mu.Unlock()
+	}
+
+	// Safety check for ChunkProgress
+	if len(ps.ChunkProgress) != width {
+		// Initialization should have happened in InitBitmap
+		// If not, we skip update to avoid panic
 		return
 	}
 
-	// Lazily init progress array if missing
-	if len(ps.ChunkProgress) != ps.BitmapWidth {
-		utils.Debug("UpdateChunkStatus: Initializing ChunkProgress array (width=%d)", ps.BitmapWidth)
-		ps.ChunkProgress = make([]int64, ps.BitmapWidth)
-	}
-
-	startIdx := int(offset / ps.ActualChunkSize)
-	endIdx := int((offset + length - 1) / ps.ActualChunkSize)
+	startIdx := int(offset / chunkSize)
+	endIdx := int((offset + length - 1) / chunkSize)
 
 	if startIdx < 0 {
 		startIdx = 0
 	}
-	if endIdx >= ps.BitmapWidth {
-		endIdx = ps.BitmapWidth - 1
+	if endIdx >= width {
+		endIdx = width - 1
 	}
 
 	for i := startIdx; i <= endIdx; i++ {
 		// Calculate precise overlap with this chunk
-		chunkStart := int64(i) * ps.ActualChunkSize
-		chunkEnd := chunkStart + ps.ActualChunkSize
+		chunkStart := int64(i) * chunkSize
+		chunkEnd := chunkStart + chunkSize
 		if chunkEnd > ps.TotalSize {
 			chunkEnd = ps.TotalSize
 		}
@@ -298,35 +347,41 @@ func (ps *ProgressState) UpdateChunkStatus(offset, length int64, status ChunkSta
 
 		switch status {
 		case ChunkCompleted:
-			// Accumulate bytes
-			// Only add providing we don't exceed chunk size
+			// "ChunkCompleted" here means "Add Progress Bytes"
 			increment := overlap
-			remainingSpace := (chunkEnd - chunkStart) - ps.ChunkProgress[i]
-
-			if increment > remainingSpace {
-				increment = remainingSpace
-			}
 
 			if increment > 0 {
-				ps.ChunkProgress[i] += increment
-				ps.VerifiedProgress.Add(increment)
-			}
+				// CAS Loop to safely add bytes without exceeding chunkSize
+				// This prevents over-counting in case of duplicate packets or retries
+				for {
+					current := atomic.LoadInt64(&ps.ChunkProgress[i])
+					remainingSpace := (chunkEnd - chunkStart) - current
 
-			if ps.ChunkProgress[i] >= (chunkEnd - chunkStart) {
-				ps.ChunkProgress[i] = chunkEnd - chunkStart // clamp
-				ps.SetChunkState(i, ChunkCompleted)
-				// utils.Debug("Chunk %d completed (size=%d)", i, ps.ChunkProgress[i])
-			} else {
-				// Partial progress -> Downloading
-				if ps.GetChunkState(i) != ChunkCompleted {
-					ps.SetChunkState(i, ChunkDownloading)
+					// Calculate effective increment
+					effIncrement := increment
+					if effIncrement > remainingSpace {
+						effIncrement = remainingSpace
+					}
+
+					if effIncrement <= 0 {
+						break // No space or already full
+					}
+
+					// Try to add
+					if atomic.CompareAndSwapInt64(&ps.ChunkProgress[i], current, current+effIncrement) {
+						ps.VerifiedProgress.Add(effIncrement)
+						break // Success
+					}
+					// Retry if CAS failed (concurrent update)
 				}
 			}
+
 		case ChunkDownloading:
-			current := ps.GetChunkState(i)
-			if current != ChunkCompleted {
-				ps.SetChunkState(i, ChunkDownloading)
-			}
+			// Mark as Downloading (Active but 0 bytes)
+			// This requires bitmap update, which needs lock.
+			// However, for performance, we skip this visual-only update during high-speed download.
+			// If 0 bytes are added, we just return.
+			// If bytes are added later, it will show as Downloading/Completed.
 		}
 	}
 }
@@ -419,6 +474,7 @@ func (ps *ProgressState) RecalculateProgress(remainingTasks []Task) {
 }
 
 // GetBitmap returns a copy of the bitmap and metadata
+// Generates bitmap dynamically from ChunkProgress to avoid locking writers
 func (ps *ProgressState) GetBitmap() ([]byte, int, int64, int64, []int64) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -427,11 +483,46 @@ func (ps *ProgressState) GetBitmap() ([]byte, int, int64, int64, []int64) {
 		return nil, 0, 0, 0, nil
 	}
 
+	width := ps.BitmapWidth
 	result := make([]byte, len(ps.ChunkBitmap))
-	copy(result, ps.ChunkBitmap)
+	progressResult := make([]int64, width)
 
-	progressResult := make([]int64, len(ps.ChunkProgress))
-	copy(progressResult, ps.ChunkProgress)
+	// Iterate and generate bitmap from atomic progress
+	for i := 0; i < width; i++ {
+		// Atomic load
+		// Safe access since we hold ps.mu which protects pointer/len, and atomic protects value
+		if i < len(ps.ChunkProgress) {
+			val := atomic.LoadInt64(&ps.ChunkProgress[i])
+			progressResult[i] = val
 
-	return result, ps.BitmapWidth, ps.TotalSize, ps.ActualChunkSize, progressResult
+			// Determine status
+			var status ChunkStatus
+
+			chunkStart := int64(i) * ps.ActualChunkSize
+			chunkEnd := chunkStart + ps.ActualChunkSize
+			if chunkEnd > ps.TotalSize {
+				chunkEnd = ps.TotalSize
+			}
+			chunkSize := chunkEnd - chunkStart
+
+			if val >= chunkSize {
+				status = ChunkCompleted
+				// Clamp for display consistency
+				if val > chunkSize {
+					progressResult[i] = chunkSize
+				}
+			} else if val > 0 {
+				status = ChunkDownloading
+			} else {
+				status = ChunkPending
+			}
+
+			// Set bit in result
+			byteIndex := i / 4
+			bitOffset := (i % 4) * 2
+			result[byteIndex] |= byte(status) << bitOffset
+		}
+	}
+
+	return result, width, ps.TotalSize, ps.ActualChunkSize, progressResult
 }
