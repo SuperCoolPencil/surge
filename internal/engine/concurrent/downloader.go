@@ -242,6 +242,12 @@ func (d *ConcurrentDownloader) newConcurrentClient(numConns int) *http.Client {
 			if len(via) > 0 {
 				utils.CopyRedirectHeaders(req, via[0])
 			}
+			// Re-apply explicit custom headers down the redirect chain
+			for key, val := range d.Headers {
+				if key != "Range" {
+					req.Header.Set(key, val)
+				}
+			}
 			return nil
 		},
 	}

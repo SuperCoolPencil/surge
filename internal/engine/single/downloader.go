@@ -47,16 +47,17 @@ func NewSingleDownloader(id string, progressCh chan<- any, state *types.Progress
 		runtime = &types.RuntimeConfig{}
 	}
 
-	return &SingleDownloader{
-		Client:       newSingleClient(runtime),
+	sd := &SingleDownloader{
 		ProgressChan: progressCh,
 		ID:           id,
 		State:        state,
 		Runtime:      runtime,
 	}
+	sd.Client = newSingleClient(runtime, sd)
+	return sd
 }
 
-func newSingleClient(runtime *types.RuntimeConfig) *http.Client {
+func newSingleClient(runtime *types.RuntimeConfig, sd *SingleDownloader) *http.Client {
 	transport := getSharedSingleTransport(runtime)
 
 	return &http.Client{
@@ -67,6 +68,13 @@ func newSingleClient(runtime *types.RuntimeConfig) *http.Client {
 			}
 			if len(via) > 0 {
 				utils.CopyRedirectHeaders(req, via[0])
+			}
+			if sd != nil && sd.Headers != nil {
+				for key, val := range sd.Headers {
+					if key != "Range" {
+						req.Header.Set(key, val)
+					}
+				}
 			}
 			return nil
 		},
